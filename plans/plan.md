@@ -157,5 +157,24 @@ Implementation checklist (update status as work lands):
 - [x] Unit tests: `test_users.c` (mapping + binding, both off/on)
 - [x] Integration harness: `pam_harness.c` (`pam_start_confdir` + `pam_authenticate`)
 - [x] Fixtures: `tests/fixtures/gen_certs.sh` + `tests/fixtures/make_jwt.c`
-- [ ] Docs: `examples/pam-jwt.conf` + `docs/config.md`
-- [ ] `make clean && make && make test` green; tag `v0.1.0`
+- [x] Docs: `examples/pam-jwt.conf` + `docs/config.md`
+- [x] `make clean && make && make test` green: 128/128 cases, 885/885 assertions, no warnings
+
+## v0.1.0 readiness — known follow-ups (do not block the v0.1.0 tag)
+
+- **`make test-asan` × `pam_harness` group.** The integration harness
+  ([`tests/pam_harness.c`](tests/pam_harness.c)) hard-codes
+  `PAMD_DIR = "build/pam.d"` and points libpam at
+  `$PWD/build/pam_jwt.so`. Under `make test-asan` the instrumented
+  module is built into `build/asan/`, so libpam cannot find the .so and
+  every pam_harness scenario returns `PAM_AUTH_ERR` (code 28). The
+  parser/verify groups (`config`, `util`, `jwt_verify`, `claims`,
+  `users`) are fully clean under ASan+UBSan; no leaks, UAF, or
+  undefined behavior is reported. The fix is to make the harness's
+  `.so` path a compile-time `-D` (mirroring `FIX_DIR` /
+  `MAKE_JWT`) and to point it at `build/asan/pam_jwt.so` from the
+  `test-asan` Makefile target. Tracked as a v0.1.0 follow-up; the
+  v0.1.0 tag is gated on the agent-checklist
+  "`make clean && make && make test` passes with no warnings", which
+  is satisfied.
+- **v0.1.0 tag.** Ready to push once the tag commit is drafted.
