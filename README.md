@@ -38,6 +38,12 @@ On Debian/Ubuntu:
 sudo apt-get install -y build-essential pkg-config libpam0g-dev libssl-dev libjwt-dev
 ```
 
+On Alpine Linux:
+
+```sh
+sudo apk add alpine-sdk pkgconfig linux-pam-dev libjwt-dev openssl-dev openssl bash
+```
+
 On Fedora:
 
 ```sh
@@ -45,6 +51,18 @@ sudo dnf install -y gcc make pkg-config pam-devel openssl-devel libjwt-devel
 ```
 
 > `libjwt` must be built with the OpenSSL backend (the default on most distros).
+
+### One-shot installer
+
+For CI or fresh VMs you can run the bundled helper, which auto-detects the
+distribution and installs the right packages (uses `sudo` / `doas` when not
+already root):
+
+```sh
+./scripts/install-deps.sh           # auto-detect (Alpine or Debian/Ubuntu)
+./scripts/install-deps.sh alpine    # force the apk path
+./scripts/install-deps.sh debian    # force the apt-get path
+```
 
 ## Build
 

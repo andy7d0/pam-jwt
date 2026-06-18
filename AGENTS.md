@@ -47,10 +47,21 @@ pam-jwt/
 │       ├── gen_certs.sh # openssl: RSA + EC key/cert
 │       └── make_jwt.c   # C helper minting test JWTs via libjwt
 ├── examples/pam-jwt.conf
+├── scripts/
+│   └── install-deps.sh   # Alpine/Debian build-dep installer
 └── docs/config.md
 ```
 
 ## Build & test
+
+Install build dependencies first. The bundled helper detects the distro and
+installs the right packages (needs root or `sudo`/`doas`):
+
+```sh
+./scripts/install-deps.sh
+```
+
+Then build and test:
 
 ```sh
 make            # build src/pam_jwt.so
