@@ -19,6 +19,9 @@
 void config_run(void);
 void util_run(void);
 void jwt_verify_run(void);
+void claims_run(void);
+void users_run(void);
+void pam_harness_run(void);
 
 int main(void)
 {
@@ -28,6 +31,9 @@ int main(void)
     config_run();
     util_run();
     jwt_verify_run();
+    claims_run();
+    users_run();
+    pam_harness_run();
 
     fprintf(stderr, "==================\n");
     fprintf(stderr,

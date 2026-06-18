@@ -150,9 +150,12 @@ ASAN_LIB_OBJS := \
 ASAN_TEST_OBJS := \
     $(ASAN_BUILDDIR)/tests/run_tests.o \
     $(ASAN_BUILDDIR)/tests/test.o \
+    $(ASAN_BUILDDIR)/tests/test_claims.o \
     $(ASAN_BUILDDIR)/tests/test_config.o \
     $(ASAN_BUILDDIR)/tests/test_jwt_verify.o \
-    $(ASAN_BUILDDIR)/tests/test_util.o
+    $(ASAN_BUILDDIR)/tests/test_users.o \
+    $(ASAN_BUILDDIR)/tests/test_util.o \
+    $(ASAN_BUILDDIR)/tests/pam_harness.o
 
 test-asan:
 	@echo "== building with ASan + UBSan =="

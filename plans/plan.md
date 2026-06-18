@@ -152,10 +152,10 @@ Implementation checklist (update status as work lands):
 - [x] Implement `pam_jwt.c`: `pam_sm_authenticate` + stubs
 - [x] Unit tests: `test_config.c` (args, defaults, duplicates, missing required)
 - [x] Unit tests: `test_util.c` (logging gate, strdup, world-writable, read_file)
-- [x] Unit tests: `test_jwt_verify.c` (cert + signature; alg-confusion/`none` rejected; claims; users)
-- [ ] Unit tests: `test_claims.c` (`iss`/`aud`, `exp`/`nbf`, `clock_skew`)
-- [ ] Unit tests: `test_users.c` (mapping + binding, both off/on)
-- [ ] Integration harness: `pam_harness.c` (`pam_start` + `pam_authenticate`)
+- [x] Unit tests: `test_jwt_verify.c` (cert + signature; alg-confusion/`none` rejected)
+- [x] Unit tests: `test_claims.c` (`iss`/`aud`, `exp`/`nbf`, `clock_skew`)
+- [x] Unit tests: `test_users.c` (mapping + binding, both off/on)
+- [x] Integration harness: `pam_harness.c` (`pam_start_confdir` + `pam_authenticate`)
 - [x] Fixtures: `tests/fixtures/gen_certs.sh` + `tests/fixtures/make_jwt.c`
 - [ ] Docs: `examples/pam-jwt.conf` + `docs/config.md`
 - [ ] `make clean && make && make test` green; tag `v0.1.0`
