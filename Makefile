@@ -126,6 +126,21 @@ $(FIXDIR)/make_jwt: $(FIXDIR)/make_jwt.c | $(BUILDDIR)
 # fast `make test` path stays green and incremental.
 ASAN_BUILDDIR := $(BUILDDIR)/asan
 
+# Object files linked into the ASan test binary. Each module under
+# $(SRCDIR) is built with ASan/UBSan instrumentation; test modules
+# under $(TESTDIR) are likewise. Keep this list in sync as new
+# tests land -- if a new test_*.c is added, append its object here
+# and the corresponding forward decl + call in tests/run_tests.c.
+ASAN_LIB_OBJS := \
+    $(ASAN_BUILDDIR)/config.o \
+    $(ASAN_BUILDDIR)/util.o
+
+ASAN_TEST_OBJS := \
+    $(ASAN_BUILDDIR)/tests/run_tests.o \
+    $(ASAN_BUILDDIR)/tests/test.o \
+    $(ASAN_BUILDDIR)/tests/test_config.o \
+    $(ASAN_BUILDDIR)/tests/test_util.o
+
 test-asan:
 	@echo "== building with ASan + UBSan =="
 	@$(MAKE) --no-print-directory clean
@@ -137,10 +152,7 @@ test-asan:
 	    $(CC) $(COMMON_CFLAGS) -Itests $(ASAN_FLAGS) -c $$f -o $(ASAN_BUILDDIR)/tests/$$(basename $$f .c).o; \
 	done
 	@$(CC) -o $(ASAN_BUILDDIR)/run_tests \
-	    $(ASAN_BUILDDIR)/tests/run_tests.o \
-	    $(ASAN_BUILDDIR)/tests/test.o \
-	    $(ASAN_BUILDDIR)/tests/test_config.o \
-	    $(ASAN_BUILDDIR)/config.o \
+	    $(ASAN_TEST_OBJS) $(ASAN_LIB_OBJS) \
 	    $(PKG_LDLIBS) $(ASAN_LDLIBS) -ldl
 	@echo "== running under ASan =="
 	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \

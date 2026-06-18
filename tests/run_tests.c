@@ -6,7 +6,7 @@
  * exit code (capped at 255 so it fits in a single byte).
  *
  * Groups are added by appending a `void group_run(void);` declaration
- * and a call below — no central registry needed.
+ * and a call below -- no central registry needed.
  */
 
 #include <stdio.h>
@@ -15,8 +15,9 @@
 #include "test.h"
 
 /* Forward declarations for each test group. The TEST_GROUP(name)
- * macro defines `void name##_run(void)`. */
+ * macro defines a function `void name##_run(void)`. */
 void config_run(void);
+void util_run(void);
 
 int main(void)
 {
@@ -24,6 +25,7 @@ int main(void)
     fprintf(stderr, "==================\n");
 
     config_run();
+    util_run();
 
     fprintf(stderr, "==================\n");
     fprintf(stderr,

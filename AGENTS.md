@@ -128,6 +128,11 @@ Coverage required before merge:
 1. **Config parser:** every arg, defaults, duplicates, missing required.
    The `leak:` group in `tests/test_config.c` is exercised by
    `make test-asan` and must remain leak-free.
+1a. **Util helpers:** logging gate (debug on/off × every priority),
+    `pam_jwt_strdup`, `pam_jwt_is_world_writable` (NULL/missing/regular/
+    world-writable/directory/symlink), `pam_jwt_read_file` (NULL args,
+    missing, directory, empty, small, 4 KiB). `tests/test_util.c` must
+    remain leak-free under `make test-asan`.
 2. **Cert + signature:** RSA/EC load, bad file, non-cert PEM, valid RS256/ES256,
    tampered signature, wrong key, `alg=none` rejected.
 3. **Claims:** `iss`/`aud` match/mismatch/missing; expired; not-yet-valid;
