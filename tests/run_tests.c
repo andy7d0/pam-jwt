@@ -18,6 +18,7 @@
  * macro defines a function `void name##_run(void)`. */
 void config_run(void);
 void util_run(void);
+void jwt_verify_run(void);
 
 int main(void)
 {
@@ -26,6 +27,7 @@ int main(void)
 
     config_run();
     util_run();
+    jwt_verify_run();
 
     fprintf(stderr, "==================\n");
     fprintf(stderr,

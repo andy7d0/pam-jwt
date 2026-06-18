@@ -145,6 +145,79 @@ extern "C"
      * (e.g. the issuer certificate) without dragging stdio into the module. */
     bool pam_jwt_read_file(const char *path, char **out, size_t *out_size);
 
+    /* --- JWT verification (src/jwt_verify.c) ------------------------------------
+     *
+     * The verifier is split into two layers so it can be unit-tested without
+     * a live PAM stack:
+     *
+     *   1. pam_jwt_load_cert() parses an issuer X.509 certificate, extracts
+     *      the public key, and renders it as a PEM string suitable for
+     *      libjwt's verification path. It also classifies the key as RSA or
+     *      EC so the caller can reject algorithm-confusion attacks (a token
+     *      whose `alg` does not match the certificate's key type).
+     *
+     *   2. pam_jwt_verify() runs the full checks the PAM entry point needs:
+     *      decode + signature verify, alg allowlist, exp/nbf with clock
+     *      skew, optional iss/aud match, and optional username mapping
+     *      (map_field) / binding (match_field).
+     */
+
+    /* Discriminator for the kind of public key extracted from the issuer
+     * certificate. Used to enforce that the JWT `alg` matches the key type
+     * (e.g. RS256 to RSA, ES256 to EC). */
+    enum pam_jwt_key_type
+    {
+        PAM_JWT_KEY_NONE = 0, /* unset / failure */
+        PAM_JWT_KEY_RSA,      /* RSA public key */
+        PAM_JWT_KEY_EC        /* Elliptic-curve public key */
+    };
+
+    /* Load the issuer X.509 certificate at `cert_file`, extract its public
+     * key, and render it as a NUL-terminated PEM string suitable for
+     * libjwt. On success:
+     *   - *out_pem is a freshly malloc'd, NUL-terminated buffer containing
+     *     the PEM (BEGIN PUBLIC KEY ... END PUBLIC KEY). The caller owns it
+     *     and must release it with free().
+     *   - *out_pem_len receives the byte length excluding the trailing NUL.
+     *   - *out_key_type receives PAM_JWT_KEY_RSA or PAM_JWT_KEY_EC.
+     *
+     * On failure (NULL args, unreadable file, non-cert PEM, non-RSA/EC key,
+     * OOM, ...), *out_pem is set to NULL, *out_pem_len to 0, and
+     * *out_key_type to PAM_JWT_KEY_NONE. The function never logs secrets.
+     *
+     * Returns true on success, false on any failure. */
+    bool pam_jwt_load_cert(const char *cert_file, char **out_pem,
+                           size_t *out_pem_len,
+                           enum pam_jwt_key_type *out_key_type);
+
+    /* Verify a JWT `token` (NUL-terminated) against the configuration `cfg`,
+     * loading the issuer certificate from `cfg->cert_file` and applying the
+     * optional issuer / audience / username mapping / binding rules.
+     *
+     * `pamh` is forwarded to pam_syslog for diagnostic messages and may be
+     * NULL. `requested_user` is the PAM user that initiated authentication
+     * (typically from pam_get_user()). `out_mapped_user` is an output: when
+     * cfg->map_field is configured AND verification succeeds, *out_mapped_user
+     * is set to a freshly malloc'd, NUL-terminated copy of the mapped claim
+     * value. The caller owns it and must release it with free(). When
+     * map_field is not configured the field is set to NULL.
+     *
+     * Return codes follow the Linux-PAM convention:
+     *   - PAM_SUCCESS (0): authentication succeeds
+     *   - PAM_AUTH_ERR: signature invalid, alg rejected, claim mismatch,
+     *                   expired/not-yet-valid, malformed token, ...
+     *   - PAM_USER_UNKNOWN: match_field configured and the claim does not
+     *                      equal requested_user
+     *   - PAM_SERVICE_ERR: configuration error (missing cert_file), cert
+     *                     load failure, OOM
+     *   - PAM_BUF_ERR: memory allocation failure inside libjwt
+     *
+     * The function NEVER logs the token, the authtok, or any private-key
+     * material. */
+    int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
+                       const char *token, const char *requested_user,
+                       char **out_mapped_user);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

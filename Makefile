@@ -86,6 +86,17 @@ TEST_LDLIBS := $(PKG_LDLIBS) -ldl
 $(TEST_BIN): $(TEST_OBJS) $(TEST_LIB_OBJS) | $(BUILDDIR)/tests
 	$(CC) -o $@ $(TEST_OBJS) $(TEST_LIB_OBJS) $(TEST_LDLIBS)
 
+# Per-file CFLAGS additions. test_jwt_verify.c mints tokens by exec'ing
+# tests/fixtures/make_jwt and reading tests/fixtures/*.pem/*.key, so it
+# needs to know the fixture directory at compile time. We inject -D
+# flags per object via a per-target CC command rather than a global
+# CFLAGS bump so the other test objects don't pick up the defines.
+FIX_DIR   := $(TESTDIR)/fixtures
+MAKE_JWT  := $(FIX_DIR)/make_jwt
+
+$(BUILDDIR)/tests/test_jwt_verify.o: $(TESTDIR)/test_jwt_verify.c | $(BUILDDIR)/tests
+	$(CC) $(TEST_CFLAGS) -DFIX_DIR='"$(FIX_DIR)"' -DMAKE_JWT='"$(MAKE_JWT)"' -c $< -o $@
+
 $(BUILDDIR)/tests/%.o: $(TESTDIR)/%.c | $(BUILDDIR)/tests
 	$(CC) $(TEST_CFLAGS) -c $< -o $@
 
@@ -133,12 +144,14 @@ ASAN_BUILDDIR := $(BUILDDIR)/asan
 # and the corresponding forward decl + call in tests/run_tests.c.
 ASAN_LIB_OBJS := \
     $(ASAN_BUILDDIR)/config.o \
+    $(ASAN_BUILDDIR)/jwt_verify.o \
     $(ASAN_BUILDDIR)/util.o
 
 ASAN_TEST_OBJS := \
     $(ASAN_BUILDDIR)/tests/run_tests.o \
     $(ASAN_BUILDDIR)/tests/test.o \
     $(ASAN_BUILDDIR)/tests/test_config.o \
+    $(ASAN_BUILDDIR)/tests/test_jwt_verify.o \
     $(ASAN_BUILDDIR)/tests/test_util.o
 
 test-asan:
@@ -149,7 +162,9 @@ test-asan:
 	    $(CC) $(COMMON_CFLAGS) $(ASAN_FLAGS) -c $$f -o $(ASAN_BUILDDIR)/$$(basename $$f .c).o; \
 	done
 	@for f in $(TESTDIR)/*.c; do \
-	    $(CC) $(COMMON_CFLAGS) -Itests $(ASAN_FLAGS) -c $$f -o $(ASAN_BUILDDIR)/tests/$$(basename $$f .c).o; \
+	    $(CC) $(COMMON_CFLAGS) -Itests $(ASAN_FLAGS) \
+	        -DFIX_DIR='"$(FIXDIR)"' -DMAKE_JWT='"$(FIXDIR)/make_jwt"' \
+	        -c $$f -o $(ASAN_BUILDDIR)/tests/$$(basename $$f .c).o; \
 	done
 	@$(CC) -o $(ASAN_BUILDDIR)/run_tests \
 	    $(ASAN_TEST_OBJS) $(ASAN_LIB_OBJS) \

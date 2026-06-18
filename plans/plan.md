@@ -148,14 +148,14 @@ Implementation checklist (update status as work lands):
 - [x] Scaffold repo: `README.md`, `Makefile`, `.gitignore`, `include/pam_jwt.h`; `git init`
 - [x] Implement `config.c`: parse `argc`/`argv` into `struct pam_jwt_cfg`
 - [x] Implement `util.c`: `pam_syslog` logging + helpers
-- [ ] Implement `jwt_verify.c`: cert load, signature verify, claim + user checks
-- [ ] Implement `pam_jwt.c`: `pam_sm_authenticate` + stubs
+- [x] Implement `jwt_verify.c`: cert load, signature verify, claim + user checks
+- [x] Implement `pam_jwt.c`: `pam_sm_authenticate` + stubs
 - [x] Unit tests: `test_config.c` (args, defaults, duplicates, missing required)
 - [x] Unit tests: `test_util.c` (logging gate, strdup, world-writable, read_file)
-- [ ] Unit tests: `test_jwt_verify.c` (cert + signature; alg-confusion/`none` rejected)
+- [x] Unit tests: `test_jwt_verify.c` (cert + signature; alg-confusion/`none` rejected; claims; users)
 - [ ] Unit tests: `test_claims.c` (`iss`/`aud`, `exp`/`nbf`, `clock_skew`)
 - [ ] Unit tests: `test_users.c` (mapping + binding, both off/on)
 - [ ] Integration harness: `pam_harness.c` (`pam_start` + `pam_authenticate`)
-- [ ] Fixtures: `tests/fixtures/gen_certs.sh` + `tests/fixtures/make_jwt.c`
+- [x] Fixtures: `tests/fixtures/gen_certs.sh` + `tests/fixtures/make_jwt.c`
 - [ ] Docs: `examples/pam-jwt.conf` + `docs/config.md`
 - [ ] `make clean && make && make test` green; tag `v0.1.0`

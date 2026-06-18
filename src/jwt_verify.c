@@ -1,0 +1,431 @@
+/*
+ * src/jwt_verify.c
+ *
+ * JWT verification core for pam_jwt.
+ *
+ * Responsibilities:
+ *   - Load the issuer X.509 certificate from cfg->cert_file, extract the
+ *     public key, and render it as a PEM string suitable for libjwt.
+ *   - Decode the token, verify the signature, and enforce the algorithm
+ *     allowlist ({RS256, ES256}) plus an algorithm-vs-key-type match
+ *     (prevents algorithm-confusion attacks against an RSA cert).
+ *   - Validate time-based claims (exp, nbf) with the configured clock_skew.
+ *   - Optionally enforce iss / aud equality with the configured values.
+ *   - Optionally map the PAM user from a configurable claim
+ *     (cfg->map_field) and/or require a configurable claim to equal the
+ *     requested user (cfg->match_field).
+ *
+ * Security rules enforced here (from AGENTS.md):
+ *   - alg=none and any algorithm outside {RS256, ES256} is rejected.
+ *   - The JWT's `alg` must match the certificate's key type (RSA vs EC).
+ *   - Never log the token, the password, or any private-key material.
+ *   - Warn (debug) when cert_file is world-writable.
+ *
+ * The module never logs the token, authtok, or private key material; it
+ * may log small structural facts (e.g. "expired", "iss mismatch",
+ * "alg=HS256 rejected") at LOG_DEBUG when the cfg debug flag is set.
+ */
+
+#include "pam_jwt.h"
+
+#include <ctype.h>
+#include <errno.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+#include <openssl/bio.h>
+#include <openssl/bn.h>
+#include <openssl/ec.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/rsa.h>
+#include <openssl/x509.h>
+
+#include <jwt.h>
+
+/* --- small helpers --------------------------------------------------------- */
+
+/* Predicate: is `alg` one of the algorithms we accept? Currently RS256 and
+ * ES256 are the only ones we trust. */
+static bool alg_is_allowed(jwt_alg_t alg)
+{
+    return alg == JWT_ALG_RS256 || alg == JWT_ALG_ES256;
+}
+
+/* Predicate: does `alg` match the certificate's key type? RS256 must
+ * ride an RSA key; ES256 must ride an EC key. Anything else is treated as
+ * a possible algorithm-confusion attack and rejected. */
+static bool alg_matches_key(jwt_alg_t alg, enum pam_jwt_key_type key_type)
+{
+    if (alg == JWT_ALG_RS256)
+    {
+        return key_type == PAM_JWT_KEY_RSA;
+    }
+    if (alg == JWT_ALG_ES256)
+    {
+        return key_type == PAM_JWT_KEY_EC;
+    }
+    return false;
+}
+
+/* --- certificate loading --------------------------------------------------- */
+
+bool pam_jwt_load_cert(const char *cert_file, char **out_pem,
+                       size_t *out_pem_len,
+                       enum pam_jwt_key_type *out_key_type)
+{
+    if (out_pem != NULL)
+    {
+        *out_pem = NULL;
+    }
+    if (out_pem_len != NULL)
+    {
+        *out_pem_len = 0;
+    }
+    if (out_key_type != NULL)
+    {
+        *out_key_type = PAM_JWT_KEY_NONE;
+    }
+    if (cert_file == NULL || out_pem == NULL || out_pem_len == NULL ||
+        out_key_type == NULL)
+    {
+        return false;
+    }
+
+    /* Slurp the PEM file into memory. OpenSSL's BIO_new_file takes a FILE*,
+     * but reading the bytes first keeps BIO management simpler and lets us
+     * use the helpers already declared in pam_jwt.h. */
+    char *pem_buf = NULL;
+    size_t pem_len = 0;
+    if (!pam_jwt_read_file(cert_file, &pem_buf, &pem_len) || pem_buf == NULL)
+    {
+        /* pam_jwt_read_file() failed: bad path, non-regular file, OOM, ... */
+        return false;
+    }
+
+    /* Build a read-only memory BIO over the slurped bytes. */
+    BIO *bio = BIO_new_mem_buf(pem_buf, (int)pem_len);
+    if (bio == NULL)
+    {
+        free(pem_buf);
+        return false;
+    }
+
+    /* Parse the certificate. PEM_read_X509 takes a BIO, returns NULL on
+     * failure. Any non-NULL X509* must be X509_free()d. */
+    X509 *cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+    BIO_free(bio);
+    if (cert == NULL)
+    {
+        /* Not a valid X.509 PEM (could be a public/private key, a CSR,
+         * garbage, etc.). */
+        free(pem_buf);
+        return false;
+    }
+
+    /* Extract the public key. X509_get_pubkey returns a fresh EVP_PKEY that
+     * must be freed. NULL on failure. */
+    EVP_PKEY *pkey = X509_get_pubkey(cert);
+    X509_free(cert);
+    if (pkey == NULL)
+    {
+        free(pem_buf);
+        return false;
+    }
+
+    /* Classify the key. We refuse anything that isn't RSA or EC so the
+     * caller can apply an algorithm-vs-key-type match. */
+    enum pam_jwt_key_type key_type = PAM_JWT_KEY_NONE;
+    int nid = EVP_PKEY_base_id(pkey);
+    if (nid == EVP_PKEY_RSA)
+    {
+        key_type = PAM_JWT_KEY_RSA;
+    }
+    else if (nid == EVP_PKEY_EC)
+    {
+        key_type = PAM_JWT_KEY_EC;
+    }
+    else
+    {
+        EVP_PKEY_free(pkey);
+        free(pem_buf);
+        return false;
+    }
+
+    /* Render the public key as a generic SubjectPublicKeyInfo PEM so it
+     * can be fed to libjwt regardless of the inner key type. */
+    BIO *out_bio = BIO_new(BIO_s_mem());
+    if (out_bio == NULL)
+    {
+        EVP_PKEY_free(pkey);
+        free(pem_buf);
+        return false;
+    }
+    if (PEM_write_bio_PUBKEY(out_bio, pkey) != 1)
+    {
+        BIO_free(out_bio);
+        EVP_PKEY_free(pkey);
+        free(pem_buf);
+        return false;
+    }
+
+    /* Copy the BIO contents out as a NUL-terminated string. */
+    char *bio_data = NULL;
+    long bio_len = BIO_get_mem_data(out_bio, &bio_data);
+    if (bio_data == NULL || bio_len <= 0)
+    {
+        BIO_free(out_bio);
+        EVP_PKEY_free(pkey);
+        free(pem_buf);
+        return false;
+    }
+    char *out = malloc((size_t)bio_len + 1U);
+    if (out == NULL)
+    {
+        BIO_free(out_bio);
+        EVP_PKEY_free(pkey);
+        free(pem_buf);
+        return false;
+    }
+    memcpy(out, bio_data, (size_t)bio_len);
+    out[bio_len] = '\0';
+
+    BIO_free(out_bio);
+    EVP_PKEY_free(pkey);
+    free(pem_buf);
+
+    *out_pem = out;
+    *out_pem_len = (size_t)bio_len;
+    *out_key_type = key_type;
+    return true;
+}
+
+/* --- token verification ---------------------------------------------------- */
+
+/* Compare two NUL-terminated strings for equality. Returns true iff both
+ * pointers are non-NULL and the strings match byte-for-byte. Centralised so
+ * the binding/mapping checks have a single source of truth. */
+static bool str_eq(const char *a, const char *b)
+{
+    if (a == NULL || b == NULL)
+    {
+        return false;
+    }
+    return strcmp(a, b) == 0;
+}
+
+/* Validate time-based claims (exp, nbf) using libjwt's validation object.
+ * Returns true on success. */
+static bool check_time_claims(jwt_t *jwt, int clock_skew)
+{
+    jwt_valid_t *valid = NULL;
+    if (jwt_valid_new(&valid, jwt_get_alg(jwt)) != 0 || valid == NULL)
+    {
+        return false;
+    }
+    /* jwt_valid_set_now() defaults to time(NULL); we set it explicitly so
+     * tests can be deterministic when they ever need to. */
+    (void)jwt_valid_set_now(valid, time(NULL));
+    if (clock_skew > 0)
+    {
+        (void)jwt_valid_set_exp_leeway(valid, (time_t)clock_skew);
+        (void)jwt_valid_set_nbf_leeway(valid, (time_t)clock_skew);
+    }
+    unsigned int status = jwt_validate(jwt, valid);
+    jwt_valid_free(valid);
+
+    /* We only care about exp / nbf here. iss/aud/sub are checked by hand
+     * so we can reuse libjwt's matching for time only. */
+    return (status & (JWT_VALIDATION_EXPIRED | JWT_VALIDATION_TOO_NEW)) == 0;
+}
+
+int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
+                   const char *token, const char *requested_user,
+                   char **out_mapped_user)
+{
+    /* Initialize all out params up-front so a failure in the middle of
+     * this function leaves the caller with a known-clean state. */
+    if (out_mapped_user != NULL)
+    {
+        *out_mapped_user = NULL;
+    }
+
+    if (cfg == NULL || token == NULL || requested_user == NULL)
+    {
+        return PAM_SERVICE_ERR;
+    }
+    if (cfg->cert_file == NULL)
+    {
+        /* Defensive: the config parser already enforces this, but the
+         * verifier may be called directly from tests. */
+        return PAM_SERVICE_ERR;
+    }
+
+    /* Sanity-check the token: libjwt rejects empty strings but the early
+     * return keeps the code obvious. */
+    if (token[0] == '\0')
+    {
+        return PAM_AUTH_ERR;
+    }
+
+    /* Load the issuer certificate. We intentionally pull this on every
+     * call (rather than caching at config time) so a cert rotation is
+     * picked up without restarting the PAM stack. The cert is small. */
+    char *pubkey_pem = NULL;
+    size_t pubkey_len = 0;
+    enum pam_jwt_key_type key_type = PAM_JWT_KEY_NONE;
+    if (!pam_jwt_load_cert(cfg->cert_file, &pubkey_pem, &pubkey_len,
+                           &key_type))
+    {
+        pam_jwt_log(pamh, cfg->debug, LOG_ERR,
+                    "pam_jwt: failed to load issuer certificate");
+        return PAM_SERVICE_ERR;
+    }
+
+    /* Defence-in-depth: warn (debug) if the cert file is world-writable.
+     * This catches a misconfigured deployment before it becomes a
+     * privilege-escalation vector. */
+    if (cfg->debug && pam_jwt_is_world_writable(cfg->cert_file))
+    {
+        pam_jwt_log(pamh, true, LOG_DEBUG,
+                    "pam_jwt: cert_file is world-writable");
+    }
+
+    /* Decode + verify signature. libjwt's jwt_decode also accepts the
+     * alg=none "unsigned" case; we treat that as an authentication
+     * failure unconditionally (it would not pass jwt_decode's signature
+     * check anyway, since we provide a non-NULL key, but we re-check
+     * the alg explicitly below to be safe and to be able to emit a
+     * precise diagnostic). */
+    jwt_t *jwt = NULL;
+    int rc = jwt_decode(&jwt, token,
+                        (const unsigned char *)pubkey_pem,
+                        (int)pubkey_len);
+    if (rc != 0 || jwt == NULL)
+    {
+        /* jwt_decode() failed: malformed token, bad signature, or
+         * alg/key mismatch. Wipe the (now unused) PEM buffer before
+         * returning; the key is public but the buffer was heap-allocated
+         * and reentrancy safety is cheap. */
+        if (pubkey_pem != NULL)
+        {
+            memset(pubkey_pem, 0, pubkey_len);
+            free(pubkey_pem);
+        }
+        pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
+                    "pam_jwt: jwt_decode failed (bad signature or format)");
+        return PAM_AUTH_ERR;
+    }
+
+    jwt_alg_t alg = jwt_get_alg(jwt);
+    bool alg_ok = alg_is_allowed(alg) && alg_matches_key(alg, key_type);
+    if (!alg_ok)
+    {
+        const char *alg_name = jwt_alg_str(alg);
+        pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
+                    "pam_jwt: rejecting token with disallowed alg");
+        jwt_free(jwt);
+        memset(pubkey_pem, 0, pubkey_len);
+        free(pubkey_pem);
+        /* alg_name is a static string from libjwt; logging it is safe. */
+        (void)alg_name;
+        return PAM_AUTH_ERR;
+    }
+
+    /* Validate exp / nbf with clock_skew. */
+    if (!check_time_claims(jwt, cfg->clock_skew))
+    {
+        pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
+                    "pam_jwt: token expired or not yet valid");
+        jwt_free(jwt);
+        memset(pubkey_pem, 0, pubkey_len);
+        free(pubkey_pem);
+        return PAM_AUTH_ERR;
+    }
+
+    /* Optional issuer match. */
+    if (cfg->issuer != NULL)
+    {
+        const char *iss = jwt_get_grant(jwt, "iss");
+        if (!str_eq(iss, cfg->issuer))
+        {
+            pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
+                        "pam_jwt: iss claim does not match");
+            jwt_free(jwt);
+            memset(pubkey_pem, 0, pubkey_len);
+            free(pubkey_pem);
+            return PAM_AUTH_ERR;
+        }
+    }
+
+    /* Optional audience match. libjwt only checks `aud` against a single
+     * string when you ask it to, so we do it by hand and treat the claim
+     * as a single string (which is what RFC 7519 allows for the common
+     * case). If the token's `aud` is an array, jwt_get_grant returns NULL
+     * and the claim mismatches. */
+    if (cfg->audience != NULL)
+    {
+        const char *aud = jwt_get_grant(jwt, "aud");
+        if (!str_eq(aud, cfg->audience))
+        {
+            pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
+                        "pam_jwt: aud claim does not match");
+            jwt_free(jwt);
+            memset(pubkey_pem, 0, pubkey_len);
+            free(pubkey_pem);
+            return PAM_AUTH_ERR;
+        }
+    }
+
+    /* Optional username binding: required claim must equal requested_user.
+     * Done before mapping so a misconfigured deployment fails closed
+     * with PAM_USER_UNKNOWN rather than silently substituting the user. */
+    if (cfg->match_field != NULL)
+    {
+        const char *claim = jwt_get_grant(jwt, cfg->match_field);
+        if (!str_eq(claim, requested_user))
+        {
+            pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
+                        "pam_jwt: match_field claim does not equal user");
+            jwt_free(jwt);
+            memset(pubkey_pem, 0, pubkey_len);
+            free(pubkey_pem);
+            return PAM_USER_UNKNOWN;
+        }
+    }
+
+    /* Optional username mapping: hand the caller a malloc'd copy of the
+     * claim value when map_field is configured. */
+    if (cfg->map_field != NULL && out_mapped_user != NULL)
+    {
+        const char *claim = jwt_get_grant(jwt, cfg->map_field);
+        if (claim == NULL)
+        {
+            pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
+                        "pam_jwt: map_field claim missing in token");
+            jwt_free(jwt);
+            memset(pubkey_pem, 0, pubkey_len);
+            free(pubkey_pem);
+            return PAM_AUTH_ERR;
+        }
+        char *copy = pam_jwt_strdup(claim);
+        if (copy == NULL)
+        {
+            jwt_free(jwt);
+            memset(pubkey_pem, 0, pubkey_len);
+            free(pubkey_pem);
+            return PAM_BUF_ERR;
+        }
+        *out_mapped_user = copy;
+    }
+
+    /* Done. Free everything. The mapped user (if any) was already handed
+     * off; everything else is local. */
+    jwt_free(jwt);
+    memset(pubkey_pem, 0, pubkey_len);
+    free(pubkey_pem);
+    return PAM_SUCCESS;
+}
