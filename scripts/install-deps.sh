@@ -93,10 +93,15 @@ install_alpine() {
 install_debian() {
     require_cmd apt-get
 
+    # libpam0g-dev's pam.pc on Debian/Ubuntu declares `Requires.private: audit`,
+    # so pkg-config emits a warning unless libaudit-dev is present. The warning
+    # is harmless for a shared-module build (we only need -lpam), but we install
+    # libaudit-dev to keep `pkg-config --cflags pam` clean.
     local pkgs=(
         build-essential
         pkg-config
         libpam0g-dev
+        libaudit-dev
         libjwt-dev     # Debian 12+ / Ubuntu 22.04+; otherwise build libjwt from source
         libssl-dev
         openssl
@@ -166,7 +171,7 @@ main() {
         debian) install_debian ;;
     esac
 
-    log "verify with: pkg-config --modversion libpam libjwt openssl"
+    log "verify with: pkg-config --modversion pam libjwt openssl"
 }
 
 main "$@"

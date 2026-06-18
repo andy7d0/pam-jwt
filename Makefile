@@ -17,7 +17,13 @@ INSTALL_CONF_DIR := $(DESTDIR)$(PREFIX)/share/pam-jwt
 
 # --- pkg-config flags --------------------------------------------------------
 
-PKGS   := libpam libjwt openssl
+# PAM pkg-config module name varies by distro:
+#   - Debian / Ubuntu derivatives ship it as `pam`
+#   - Some other distros ship it as `libpam`
+# Probe for `pam` first, fall back to `libpam`.
+PKG_PAM := $(shell if $(PKG_CONFIG) --exists pam; then echo pam; elif $(PKG_CONFIG) --exists libpam; then echo libpam; else echo pam; fi)
+
+PKGS   := $(PKG_PAM) libjwt openssl
 PKG_CFLAGS  := $(shell $(PKG_CONFIG) --cflags $(PKGS))
 PKG_LDLIBS  := $(shell $(PKG_CONFIG) --libs   $(PKGS))
 
