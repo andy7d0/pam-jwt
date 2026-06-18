@@ -146,11 +146,11 @@ Implementation checklist (update status as work lands):
 - [x] Scaffold planning doc ([`plans/plan.md`](plans/plan.md))
 - [x] Create [`AGENTS.md`](AGENTS.md) — agent guidance
 - [x] Scaffold repo: `README.md`, `Makefile`, `.gitignore`, `include/pam_jwt.h`; `git init`
-- [ ] Implement `config.c`: parse `argc`/`argv` into `struct pam_jwt_cfg`
+- [x] Implement `config.c`: parse `argc`/`argv` into `struct pam_jwt_cfg`
 - [ ] Implement `util.c`: `pam_syslog` logging + helpers
 - [ ] Implement `jwt_verify.c`: cert load, signature verify, claim + user checks
 - [ ] Implement `pam_jwt.c`: `pam_sm_authenticate` + stubs
-- [ ] Unit tests: `test_config.c` (args, defaults, duplicates, missing required)
+- [x] Unit tests: `test_config.c` (args, defaults, duplicates, missing required)
 - [ ] Unit tests: `test_jwt_verify.c` (cert + signature; alg-confusion/`none` rejected)
 - [ ] Unit tests: `test_claims.c` (`iss`/`aud`, `exp`/`nbf`, `clock_skew`)
 - [ ] Unit tests: `test_users.c` (mapping + binding, both off/on)

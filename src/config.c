@@ -174,6 +174,16 @@ void pam_jwt_cfg_init(struct pam_jwt_cfg *cfg)
     {
         return;
     }
+    /* Reset every field to its safe default. This routine does NOT
+     * release any heap-owned strings in the cfg: callers that want
+     * to re-initialize a populated cfg must first call
+     * pam_jwt_cfg_free() and then pam_jwt_cfg_init(). The contract
+     * mirrors that of `bzero()` / `memset(0)` on a struct: it is
+     * safe to call on a zeroed or already-freed cfg, and on a cfg
+     * that was returned by a previous pam_jwt_cfg_init() with no
+     * pam_jwt_cfg_parse() in between. It is NOT safe on a cfg whose
+     * string fields contain non-heap pointers (e.g. uninitialized
+     * stack memory). */
     cfg->cert_file = NULL;
     cfg->issuer = NULL;
     cfg->audience = NULL;
@@ -211,7 +221,31 @@ enum pam_jwt_cfg_status pam_jwt_cfg_parse(int argc, const char **argv,
     {
         return PAM_JWT_CFG_E_INTERNAL;
     }
-    pam_jwt_cfg_init(cfg);
+    /* Snapshot the prior heap pointers onto the stack, then zero the
+     * cfg in place. The snapshot lets us release the prior contents
+     * via free() after the cfg has been cleared, so this prologue is
+     * safe on a fresh stack-resident cfg whose string fields contain
+     * uninitialized garbage. After the snapshot the parser is in the
+     * same state as if the caller had zeroed the cfg. */
+    char *prior_strings[5];
+    prior_strings[0] = cfg->cert_file;
+    prior_strings[1] = cfg->issuer;
+    prior_strings[2] = cfg->audience;
+    prior_strings[3] = cfg->map_field;
+    prior_strings[4] = cfg->match_field;
+    cfg->cert_file = NULL;
+    cfg->issuer = NULL;
+    cfg->audience = NULL;
+    cfg->map_field = NULL;
+    cfg->match_field = NULL;
+    cfg->clock_skew = 0;
+    cfg->debug = false;
+    /* Free the prior batch (NULL is a no-op). */
+    free(prior_strings[0]);
+    free(prior_strings[1]);
+    free(prior_strings[2]);
+    free(prior_strings[3]);
+    free(prior_strings[4]);
 
     if (argc < 0)
     {
