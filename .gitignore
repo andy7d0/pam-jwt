@@ -1,0 +1,31 @@
+# --- Build artifacts ---------------------------------------------------------
+
+build/
+*.o
+*.so
+*.so.*
+
+# --- Test binaries -----------------------------------------------------------
+
+run_tests
+tests/fixtures/make_jwt
+tests/fixtures/*.jwt
+tests/fixtures/*.pem
+tests/fixtures/*.key
+tests/fixtures/*.crt
+tests/fixtures/*.csr
+
+# --- Common editor / OS noise -----------------------------------------------
+
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+*~
+
+# --- Misc --------------------------------------------------------------------
+
+*.log
+core
+core.*
