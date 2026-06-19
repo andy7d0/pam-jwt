@@ -89,10 +89,16 @@ static bool promote_mapped_user(pam_handle_t *pamh)
     /* pam_set_item copies the string internally, so we can drop our
      * reference immediately afterwards. */
     int src_rc = pam_set_item(pamh, PAM_USER, mapped);
-    /* Clearing the slot via pam_set_data(key, NULL, ...) invokes the
-     * cleanup callback above, which releases the heap copy. After this
-     * call pam_get_data returns PAM_NO_MODULE_DATA and the slot is
-     * gone for the lifetime of the pamh. */
+    /* Clear the slot. The pattern here is intentional: passing a NULL
+     * data pointer to pam_set_data() invokes the previous cleanup
+     * callback (mapped_user_cleanup) BEFORE the slot is overwritten or
+     * released, so the heap-allocated mapped user is freed exactly
+     * once -- by libpam, not by us. A future maintainer tempted to
+     * `free(mapped)` here should resist: the cleanup has already run
+     * by the time pam_set_data returns, and a manual free() would
+     * double-free the buffer. After this call pam_get_data returns
+     * PAM_NO_MODULE_DATA and the slot is gone for the lifetime of
+     * the pamh. */
     (void)pam_set_data(pamh, PAM_JWT_MAPPED_USER_KEY, NULL,
                        mapped_user_cleanup);
     return src_rc == PAM_SUCCESS;

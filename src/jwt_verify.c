@@ -19,7 +19,9 @@
  *   - alg=none and any algorithm outside {RS256, ES256} is rejected.
  *   - The JWT's `alg` must match the certificate's key type (RSA vs EC).
  *   - Never log the token, the password, or any private-key material.
- *   - Warn (debug) when cert_file is world-writable.
+ *   - Always warn at LOG_ERR when cert_file is world-writable
+ *     (independently of the `debug` option: this is a privilege-
+ *     escalation precursor and operators must see it).
  *
  * The module never logs the token, authtok, or private key material; it
  * may log small structural facts (e.g. "expired", "iss mismatch",
@@ -412,8 +414,14 @@ static bool check_time_claims(jwt_t *jwt, int clock_skew)
     unsigned int status = jwt_validate(jwt, valid);
     jwt_valid_free(valid);
 
-    /* We only care about exp / nbf here. iss/aud/sub are checked by hand
-     * so we can reuse libjwt's matching for time only. */
+    /* We deliberately mask the status down to ONLY the time-related bits
+     * (EXPIRED / TOO_NEW) and ignore everything else. iss/aud/sub/etc.
+     * are validated by hand further down, so accepting libjwt's verdict
+     * on those flags would either duplicate or fight our own checks. A
+     * future maintainer tempted to "tighten" this by checking the full
+     * status word should know that doing so would turn a harmless extra
+     * flag into an authentication failure -- this mask is intentional,
+     * not an oversight. */
     return (status & (JWT_VALIDATION_EXPIRED | JWT_VALIDATION_TOO_NEW)) == 0;
 }
 
@@ -468,13 +476,19 @@ int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
         goto cleanup;
     }
 
-    /* Defence-in-depth: warn (debug) if the cert file is world-writable.
-     * This catches a misconfigured deployment before it becomes a
-     * privilege-escalation vector. */
-    if (cfg->debug && pam_jwt_is_world_writable(cfg->cert_file))
+    /* Defence-in-depth: warn at LOG_ERR when the cert file is world-
+     * writable. This catches a misconfigured deployment before it
+     * becomes a privilege-escalation vector (a writable cert file lets
+     * any local user substitute the trusted issuer key). The check is
+     * NOT gated behind cfg->debug: an always-visible authpriv.* entry
+     * is the right product behaviour here, since the warning is
+     * operational, not diagnostic. Authentication is NOT refused on
+     * this condition; the operator is merely notified. */
+    if (pam_jwt_is_world_writable(cfg->cert_file))
     {
-        pam_jwt_log(pamh, true, LOG_DEBUG,
-                    "pam_jwt: cert_file is world-writable");
+        pam_jwt_log(pamh, cfg->debug, LOG_ERR,
+                    "pam_jwt: cert_file is world-writable (refusing "
+                    "this configuration is recommended)");
     }
 
     /* Decode + verify signature. libjwt's jwt_decode also accepts the

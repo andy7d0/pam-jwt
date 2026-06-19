@@ -42,8 +42,12 @@ trusted to verify incoming JWTs. The file must be readable by the
 process performing authentication.
 
 If the file is world-writable, the module emits a warning at
-`LOG_DEBUG` (only visible when `debug` is on) — the auth result is
-unaffected, but the condition is a configuration mistake worth surfacing.
+`LOG_ERR` (under the `authpriv` facility) **regardless of the `debug`
+option**. Authentication is not refused on this condition — operators
+are merely notified that a local user could substitute the trusted
+issuer key, which is a privilege-escalation precursor. Fix the file
+mode (`chmod 0644` or stricter) and rotate the certificate if the
+condition was unintentional.
 
 ### `issuer` (optional)
 
@@ -98,7 +102,10 @@ Non-negative integer giving the leeway in seconds applied to the
 timestamps are checked strictly. `30`–`60` is a reasonable value for
 most setups where the issuer and this host are not NTP-locked.
 
-Negative values are rejected at parse time.
+Negative values are rejected at parse time. A leading `+` (e.g.
+`clock_skew=+30`) is accepted for compatibility with operators used
+to writing signed integers; the `+` is purely cosmetic and `30` and
+`+30` parse to the same value.
 
 ### `debug` (optional flag)
 
@@ -162,7 +169,10 @@ return:
 The module never logs the token, the authtok, or any private key
 material. Operational failures (bad cert file, alg mismatch, etc.)
 are surfaced via `pam_syslog(LOG_AUTHPRIV|LOG_DEBUG, ...)` and only
-visible when `debug` is set.
+visible when `debug` is set. The single exception is the
+"cert_file is world-writable" warning, which is always emitted at
+`LOG_ERR` because it points at a privilege-escalation precursor the
+operator must see.
 
 ## Security notes
 

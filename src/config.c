@@ -65,7 +65,13 @@ static bool is_valid_string(const char *s, size_t max_len)
 
 /* Parse `s` as a non-negative decimal integer. On success stores the value in
  * `*out` and returns true. Returns false on overflow, garbage input, or a
- * negative value. */
+ * negative value.
+ *
+ * Implementation note: a leading '+' (e.g. "+30") is accepted for
+ * compatibility with operators used to writing signed integers. The
+ * sign is purely cosmetic -- "+30" and "30" parse to the same value,
+ * and negative values are still rejected. This is documented in
+ * docs/config.md. */
 static bool parse_nonneg_int(const char *s, int *out)
 {
     if (s == NULL || s[0] == '\0' || out == NULL)
@@ -76,7 +82,7 @@ static bool parse_nonneg_int(const char *s, int *out)
     size_t i = 0;
     if (s[i] == '+')
     {
-        ++i; /* accept explicit sign */
+        ++i; /* accept explicit sign, see comment above */
     }
     if (s[i] == '\0')
     {

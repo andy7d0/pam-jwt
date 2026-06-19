@@ -100,7 +100,12 @@ with zero warnings.
 - **Never** log the token, the password/authtok, or any private key material.
 - Only log via `pam_syslog(LOG_AUTHPRIV | LOG_DEBUG, ...)` and only when the
   `debug` option is set.
-- Warn (debug level) if `cert_file` is world-writable.
+- Always warn at `LOG_ERR` if `cert_file` is world-writable, regardless
+  of the `debug` option. A world-writable issuer cert is a privilege-
+  escalation precursor (any local user can substitute the trusted key),
+  so the warning must reach the operator even when debug logging is
+  off. Authentication is NOT refused on this condition — the operator
+  is merely notified.
 
 ## Module configuration (PAM args)
 

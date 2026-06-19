@@ -268,6 +268,21 @@ TEST_GROUP(config)
         pam_jwt_cfg_free(&cfg);
     }
 
+    TEST("clock_skew with leading '+' is accepted and equals the unsigned form")
+    {
+        /* The parser accepts an explicit '+' sign on non-negative
+         * integers for compatibility with operators used to writing
+         * signed integers. "+30" and "30" must parse to the same value.
+         * Documented in docs/config.md. */
+        struct pam_jwt_cfg cfg;
+        enum pam_jwt_cfg_status st = parse_lits(
+            &cfg, 2, "cert_file=/a.pem", "clock_skew=+30",
+            NULL, NULL, NULL, NULL, NULL);
+        ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
+        ASSERT_INT_EQ(cfg.clock_skew, 30);
+        pam_jwt_cfg_free(&cfg);
+    }
+
     TEST("clock_skew overflow is rejected")
     {
         struct pam_jwt_cfg cfg;

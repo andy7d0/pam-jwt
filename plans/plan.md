@@ -235,23 +235,45 @@ the [`Makefile`](../Makefile), and the docs. Ordered by priority.
 
 ### Medium — correctness/robustness
 
-- [ ] **`clock_skew` status masking.** `check_time_claims` in
+- [x] **`clock_skew` status masking.** `check_time_claims` in
       [`src/jwt_verify.c`](../src/jwt_verify.c) ignores any libjwt status
       bit other than `JWT_VALIDATION_EXPIRED` / `JWT_VALIDATION_TOO_NEW`
       (intentional, since iss/aud are checked by hand). Add a one-line
       comment so a future maintainer doesn't "fix" it into a regression.
-- [ ] **`clock_skew=+N` is silently accepted.** `parse_nonneg_int` in
+      Resolved: the comment above the status mask now explicitly notes
+      that the mask is intentional and warns against "tightening" the
+      check into a regression.
+- [x] **`clock_skew=+N` is silently accepted.** `parse_nonneg_int` in
       [`src/config.c`](../src/config.c) accepts a leading `+`. Harmless but
       undocumented. Decide and either document or reject.
-- [ ] **World-writable cert warning is double-gated behind `debug`.**
+      Resolved: documented in [`docs/config.md`](../docs/config.md)
+      ("Negative values are rejected at parse time. A leading `+` is
+      accepted for compatibility with operators used to writing signed
+      integers"), with a matching implementation note in `parse_nonneg_int`,
+      and a new positive test in
+      [`tests/test_config.c`](../tests/test_config.c) asserting
+      `clock_skew=+30` parses to `30`.
+- [x] **World-writable cert warning is double-gated behind `debug`.**
       [`src/jwt_verify.c`](../src/jwt_verify.c) only checks/warns when
       `cfg->debug` is set. This is a privilege-escalation precursor;
       consider promoting to `LOG_ERR` (always emitted) per the project's
       own security framing.
-- [ ] **`promote_mapped_user` comment.** [`src/pam_jwt.c`](../src/pam_jwt.c)
+      Resolved: the world-writable check now always runs, and the
+      warning is emitted at `LOG_ERR` regardless of the `debug` option.
+      Documented in [`docs/config.md`](../docs/config.md) ("If the file
+      is world-writable, the module emits a warning at `LOG_ERR` ...
+      **regardless of the `debug` option**") and in the AGENTS.md
+      security rules. Authentication is still NOT refused on this
+      condition.
+- [x] **`promote_mapped_user` comment.** [`src/pam_jwt.c`](../src/pam_jwt.c)
       clears the slot via `pam_set_data(key, NULL, cleanup)`, which invokes
       the old cleanup (freeing the buffer) before overwriting. The code is
       correct; the comment could state this explicitly.
+      Resolved: the inline comment above the clearing `pam_set_data()`
+      call now explains the cleanup-on-overwrite semantics, warns a
+      future maintainer against adding a manual `free(mapped)` (which
+      would double-free the buffer), and clarifies that the heap
+      copy is released by libpam, not by us.
 
 ### Low — style/consistency
 
