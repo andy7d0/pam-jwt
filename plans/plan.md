@@ -188,7 +188,7 @@ the [`Makefile`](../Makefile), and the docs. Ordered by priority.
 
 ### High — code/doc vs. spec mismatches
 
-- [ ] **`audience` array semantics documented but not implemented.**
+- [x] **`audience` array semantics documented but not implemented.**
       [`docs/config.md`](../docs/config.md) and
       [`examples/pam-jwt.conf`](../examples/pam-jwt.conf) promise array-aware
       containment ("If `aud` is an array, the configured value must be one of
@@ -199,6 +199,12 @@ the [`Makefile`](../Makefile), and the docs. Ordered by priority.
       `jwt_valid_set_aud`/validation) or fix the docs to state string-only
       matching. This is also a real interop gap: RFC 7519 permits `aud` to be
       an array.
+      Resolved: [`src/jwt_verify.c`](../src/jwt_verify.c) now falls back to
+      `jwt_get_grants_json()` and walks the array when `aud` is not a
+      JSON string; covered by 7 new cases in
+      [`tests/test_claims.c`](../tests/test_claims.c) (`aud array:` group),
+      all green under `make clean && make && make test` and
+      `make test-asan`.
 - [ ] **Return-code table in [`docs/config.md`](../docs/config.md) is wrong
       vs. code.**
       - `PAM_AUTHTOK_ERR` is listed but [`src/pam_jwt.c`](../src/pam_jwt.c)
