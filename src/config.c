@@ -22,25 +22,6 @@
 
 /* --- small helpers --------------------------------------------------------- */
 
-/* Duplicate a NUL-terminated string into a freshly malloc'd buffer. Returns
- * NULL on allocation failure or if `s` is NULL. The returned pointer is owned
- * by the caller and must be released with free(). */
-static char *str_dup(const char *s)
-{
-    if (s == NULL)
-    {
-        return NULL;
-    }
-    const size_t len = strlen(s);
-    char *out = malloc(len + 1U);
-    if (out == NULL)
-    {
-        return NULL;
-    }
-    memcpy(out, s, len + 1U);
-    return out;
-}
-
 /* Return true iff `s` is a non-empty printable string no longer than
  * `max_len` bytes (excluding the trailing NUL). Used to reject pathological
  * inputs without relying on undefined behavior. */
@@ -136,7 +117,10 @@ static enum pam_jwt_cfg_status take_string(char **slot, bool *seen,
     {
         return PAM_JWT_CFG_E_INVALID_VALUE;
     }
-    char *copy = str_dup(value);
+    /* pam_jwt_strdup() (declared in pam_jwt.h, defined in util.c) is the single
+     * source of truth for string duplication: it centralises the malloc+memcpy
+     * dance, handles NULL, and is unit-tested in tests/test_util.c. */
+    char *copy = pam_jwt_strdup(value);
     if (copy == NULL)
     {
         return PAM_JWT_CFG_E_OOM;
