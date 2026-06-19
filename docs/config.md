@@ -30,6 +30,7 @@ value longer than `PAM_JWT_MAX_OPT_LEN` (1024 bytes) anyway.
 | `issuer=<string>` | no | unset | Require `iss` claim to equal this string |
 | `audience=<string>` | no | unset | Require `aud` claim to contain this string |
 | `map_field=<claim>` | no | unset | Set the PAM user from this JWT claim |
+| `fallback_user=<user>` | no | unset | PAM user used when the `map_field` claim is missing or empty in a verified token |
 | `match_field=<claim>` | no | unset | Require this JWT claim to equal the requested user |
 | `clock_skew=<sec>` | no | `0` | Leeway (seconds) for `exp` / `nbf` validation |
 | `debug` | no | off | Verbose `pam_syslog` logging (never logs tokens) |
@@ -77,7 +78,22 @@ user via `pam_set_data()` / `pam_get_user()`. Independent of
 
 The claim must exist, must be a string, and must be non-empty. A token
 that does not carry the claim (or carries a non-string value) is
-rejected.
+rejected, unless `fallback_user` is also configured (see below).
+
+### `fallback_user` (optional, requires `map_field`)
+
+When `map_field` is configured and the verified token does not carry
+the mapped claim (the claim is missing, or its value is the empty
+string), the verifier uses `fallback_user` as the PAM user instead of
+rejecting the token. The mapped-user check still passes, so a single
+service account can authenticate any token whose IdP omits the
+configured claim.
+
+The substitution is restricted to the mapping step. If `match_field`
+is also configured, the requested user is still compared against the
+claim named by `match_field` -- the fallback does NOT participate in
+the binding check. Configuring `fallback_user` without `map_field` is
+rejected at parse time as `PAM_JWT_CFG_E_INVALID_VALUE`.
 
 ### `match_field` (optional, independent)
 
@@ -143,8 +159,8 @@ propagates them unchanged, except where noted.
 
 | Code | Returned by | Meaning |
 |---|---|---|
-| `PAM_SUCCESS` | `pam_sm_authenticate` | The JWT verified, all configured claim / user checks passed. The optional mapped user (if `map_field` is set) has been stashed for `pam_sm_setcred` to promote to `PAM_USER`. |
-| `PAM_AUTH_ERR` | `pam_sm_authenticate`, `pam_jwt_verify` | The authtok could not be retrieved from the PAM conversation, the token is empty, the token is malformed, the signature is invalid, the JWT `alg` is outside `{RS256, ES256}` or does not match the certificate key type, the time-based claims (`exp` / `nbf`) fall outside the `clock_skew` window, the `iss` claim does not match the configured `issuer`, the `aud` claim does not contain the configured `audience`, or the `map_field` claim is missing, non-string, or empty in the token. |
+| `PAM_SUCCESS` | `pam_sm_authenticate` | The JWT verified, all configured claim / user checks passed. The optional mapped user (the `map_field` claim value, or `fallback_user` if the claim was missing/empty) has been stashed for `pam_sm_setcred` to promote to `PAM_USER`. |
+| `PAM_AUTH_ERR` | `pam_sm_authenticate`, `pam_jwt_verify` | The authtok could not be retrieved from the PAM conversation, the token is empty, the token is malformed, the signature is invalid, the JWT `alg` is outside `{RS256, ES256}` or does not match the certificate key type, the time-based claims (`exp` / `nbf`) fall outside the `clock_skew` window, the `iss` claim does not match the configured `issuer`, the `aud` claim does not contain the configured `audience`, or the `map_field` claim is missing, non-string, or empty in the token AND no `fallback_user` was configured. |
 | `PAM_USER_UNKNOWN` | `pam_sm_authenticate`, `pam_jwt_verify` | `pam_get_user()` returned no user (or an empty string), **or** the `match_field` claim does not equal the user that initiated authentication. |
 | `PAM_SERVICE_ERR` | `pam_sm_authenticate`, `pam_jwt_verify` | Module arguments could not be parsed (`cert_file` missing, malformed value, duplicate, OOM during parse, ...), the cert file is missing or unreadable, the cert file is not a valid X.509 PEM, or another internal error occurred (e.g. an unexpected `NULL` argument reaching the verifier). |
 | `PAM_BUF_ERR` | `pam_sm_authenticate`, `pam_jwt_verify` | Memory allocation failure (e.g. cloning the mapped-user claim, or stashing it via `pam_set_data()`). |

@@ -98,6 +98,7 @@ struct cfg_seen
     bool issuer;
     bool audience;
     bool map_field;
+    bool fallback_user;
     bool match_field;
     bool clock_skew;
     bool debug;
@@ -178,6 +179,7 @@ void pam_jwt_cfg_init(struct pam_jwt_cfg *cfg)
     cfg->issuer = NULL;
     cfg->audience = NULL;
     cfg->map_field = NULL;
+    cfg->fallback_user = NULL;
     cfg->match_field = NULL;
     cfg->clock_skew = 0;
     cfg->debug = false;
@@ -198,6 +200,8 @@ void pam_jwt_cfg_free(struct pam_jwt_cfg *cfg)
     cfg->audience = NULL;
     free(cfg->map_field);
     cfg->map_field = NULL;
+    free(cfg->fallback_user);
+    cfg->fallback_user = NULL;
     free(cfg->match_field);
     cfg->match_field = NULL;
     cfg->clock_skew = 0;
@@ -221,21 +225,23 @@ enum pam_jwt_cfg_status pam_jwt_cfg_parse(int argc, const char **argv,
      * The prior_strings[] array is sized to match the number of
      * heap-owned `char *` fields in `struct pam_jwt_cfg` (see
      * include/pam_jwt.h): cert_file, issuer, audience, map_field,
-     * match_field. If a new string field is added to the cfg, bump
-     * this constant AND add matching entries below, otherwise the new
-     * field will leak every time the cfg is re-parsed. clock_skew and
-     * debug are scalar/POD and are reset directly without going
-     * through the snapshot. */
-    char *prior_strings[5];
+     * fallback_user, match_field. If a new string field is added to
+     * the cfg, bump this constant AND add matching entries below,
+     * otherwise the new field will leak every time the cfg is
+     * re-parsed. clock_skew and debug are scalar/POD and are reset
+     * directly without going through the snapshot. */
+    char *prior_strings[6];
     prior_strings[0] = cfg->cert_file;
     prior_strings[1] = cfg->issuer;
     prior_strings[2] = cfg->audience;
     prior_strings[3] = cfg->map_field;
-    prior_strings[4] = cfg->match_field;
+    prior_strings[4] = cfg->fallback_user;
+    prior_strings[5] = cfg->match_field;
     cfg->cert_file = NULL;
     cfg->issuer = NULL;
     cfg->audience = NULL;
     cfg->map_field = NULL;
+    cfg->fallback_user = NULL;
     cfg->match_field = NULL;
     cfg->clock_skew = 0;
     cfg->debug = false;
@@ -245,6 +251,7 @@ enum pam_jwt_cfg_status pam_jwt_cfg_parse(int argc, const char **argv,
     free(prior_strings[2]);
     free(prior_strings[3]);
     free(prior_strings[4]);
+    free(prior_strings[5]);
 
     if (argc < 0)
     {
@@ -334,6 +341,21 @@ enum pam_jwt_cfg_status pam_jwt_cfg_parse(int argc, const char **argv,
                 return st;
             }
         }
+        else if (strcmp(key, "fallback_user") == 0)
+        {
+            /* fallback_user only makes sense in combination with
+             * map_field: there is nothing to fall back to if the
+             * operator is not asking the verifier to read a claim at
+             * all. Reject the configuration up front so the failure
+             * surfaces at PAM service start (PAM_SERVICE_ERR) rather
+             * than being silently ignored at every authenticate(). */
+            enum pam_jwt_cfg_status st = take_string(
+                &cfg->fallback_user, &seen.fallback_user, value);
+            if (st != PAM_JWT_CFG_OK)
+            {
+                return st;
+            }
+        }
         else if (strcmp(key, "match_field") == 0)
         {
             enum pam_jwt_cfg_status st =
@@ -363,6 +385,17 @@ enum pam_jwt_cfg_status pam_jwt_cfg_parse(int argc, const char **argv,
     if (!seen.cert_file)
     {
         return PAM_JWT_CFG_E_MISSING_REQUIRED;
+    }
+
+    /* fallback_user is meaningful only when map_field is also set:
+     * without map_field, the verifier never reads a claim and so has
+     * nothing to substitute. Treating this as INVALID_VALUE rather than
+     * MISSING_REQUIRED keeps the error class consistent with "unknown
+     * arg" / "garbled value" -- the operator almost certainly meant to
+     * configure map_field too. */
+    if (seen.fallback_user && !seen.map_field)
+    {
+        return PAM_JWT_CFG_E_INVALID_VALUE;
     }
 
     return PAM_JWT_CFG_OK;

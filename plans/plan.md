@@ -31,6 +31,7 @@ Both username options are independent and default off.
 | `issuer=<string>` | no | unset | If set, require `iss` claim to equal this |
 | `audience=<string>` | no | unset | If set, require `aud` claim to contain this |
 | `map_field=<claim>` | no | unset | If set, set the PAM user from this JWT claim |
+| `fallback_user=<user>` | no | unset | PAM user when `map_field` claim is missing/empty (requires `map_field`) |
 | `match_field=<claim>` | no | unset | If set, require this JWT claim to equal the requested user |
 | `clock_skew=<sec>` | no | `0` | Leeway for `exp` / `nbf` validation |
 | `debug` | no | off | Verbose `pam_syslog` logging (never logs tokens) |

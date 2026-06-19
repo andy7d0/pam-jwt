@@ -115,12 +115,19 @@ with zero warnings.
 | `issuer=<string>` | no | unset | Require `iss` claim to equal this |
 | `audience=<string>` | no | unset | Require `aud` claim to contain this |
 | `map_field=<claim>` | no | unset | Set PAM user from this JWT claim |
+| `fallback_user=<user>` | no | unset | PAM user when `map_field` claim is absent/empty |
 | `match_field=<claim>` | no | unset | Require this claim to equal requested user |
 | `clock_skew=<sec>` | no | `0` | Leeway for `exp` / `nbf` validation |
 | `debug` | no | off | Verbose `pam_syslog` logging (never logs tokens) |
 
 `map_field` (mapping) and `match_field` (binding) are independent and both
-default off.
+default off. `fallback_user` is meaningful only when `map_field` is also
+set; configuring it without `map_field` is rejected at parse time as
+`PAM_JWT_CFG_E_INVALID_VALUE`. When the `map_field` claim is missing or
+empty in a verified token, the verifier substitutes `fallback_user` for
+the mapped PAM user. The substitution does NOT participate in the
+`match_field` check, which always compares the requested user against
+the configured claim value.
 
 ## Testing strategy
 

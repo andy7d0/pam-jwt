@@ -576,30 +576,46 @@ int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
 
     /* Optional username mapping: hand the caller a malloc'd copy of the
      * claim value when map_field is configured. The mapped claim must
-     * exist AND be non-empty: docs/config.md documents the mapped user
-     * as a PAM user name and an empty string here would either be
-     * promoted to PAM_USER as "" or, if match_field is also on, fail
-     * the binding check with a confusing PAM_USER_UNKNOWN. Reject up
-     * front with PAM_AUTH_ERR so the failure mode is consistent with
-     * the "missing claim" path and never produces an empty user. */
+     * exist AND be a non-empty string: docs/config.md documents the
+     * mapped user as a PAM user name and an empty string here would
+     * either be promoted to PAM_USER as "" or, if match_field is also
+     * on, fail the binding check with a confusing PAM_USER_UNKNOWN.
+     *
+     * If cfg->fallback_user is also configured, the missing/empty
+     * cases do NOT fail authentication: instead the verifier clones
+     * the operator-supplied fallback string and surfaces it as the
+     * mapped user. The fallback_user semantics are deliberately
+     * restricted to the mapping step -- match_field (if set) still
+     * compares the requested user against the corresponding claim
+     * value, so a fallback to "service-acct" does not silently grant
+     * access to every token that omits the mapped claim. */
     if (cfg->map_field != NULL && out_mapped_user != NULL)
     {
         const char *claim = jwt_get_grant(jwt, cfg->map_field);
-        if (claim == NULL)
+        const char *mapped_source = claim;
+        if (mapped_source != NULL && mapped_source[0] == '\0')
         {
-            pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
-                        "pam_jwt: map_field claim missing in token");
-            ret = PAM_AUTH_ERR;
-            goto cleanup;
+            mapped_source = NULL;
         }
-        if (claim[0] == '\0')
+        if (mapped_source == NULL)
         {
-            pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
-                        "pam_jwt: map_field claim is empty in token");
-            ret = PAM_AUTH_ERR;
-            goto cleanup;
+            if (cfg->fallback_user != NULL)
+            {
+                pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
+                            "pam_jwt: map_field claim missing/empty in "
+                            "token, using fallback_user");
+                mapped_source = cfg->fallback_user;
+            }
+            else
+            {
+                pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
+                            "pam_jwt: map_field claim missing/empty in "
+                            "token");
+                ret = PAM_AUTH_ERR;
+                goto cleanup;
+            }
         }
-        char *copy = pam_jwt_strdup(claim);
+        char *copy = pam_jwt_strdup(mapped_source);
         if (copy == NULL)
         {
             ret = PAM_BUF_ERR;

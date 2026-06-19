@@ -6,7 +6,7 @@
  *
  * Coverage targets (from AGENTS.md):
  *   - every option (cert_file, issuer, audience, map_field,
- *     match_field, clock_skew, debug)
+ *     fallback_user, match_field, clock_skew, debug)
  *   - defaults when an option is omitted
  *   - duplicate detection
  *   - missing required (cert_file)
@@ -50,10 +50,11 @@ static enum pam_jwt_cfg_status parse_lits(struct pam_jwt_cfg *cfg,
                                           int n, const char *a0,
                                           const char *a1, const char *a2,
                                           const char *a3, const char *a4,
-                                          const char *a5, const char *a6)
+                                          const char *a5, const char *a6,
+                                          const char *a7)
 {
-    const char *argv[7] = {a0, a1, a2, a3, a4, a5, a6};
-    if (n < 0 || n > 7)
+    const char *argv[8] = {a0, a1, a2, a3, a4, a5, a6, a7};
+    if (n < 0 || n > 8)
     {
         return PAM_JWT_CFG_E_INTERNAL;
     }
@@ -74,6 +75,7 @@ TEST_GROUP(config)
         ASSERT_TRUE(cfg.issuer == NULL);
         ASSERT_TRUE(cfg.audience == NULL);
         ASSERT_TRUE(cfg.map_field == NULL);
+        ASSERT_TRUE(cfg.fallback_user == NULL);
         ASSERT_TRUE(cfg.match_field == NULL);
         ASSERT_INT_EQ(cfg.clock_skew, 0);
         ASSERT_TRUE(cfg.debug == false);
@@ -98,13 +100,13 @@ TEST_GROUP(config)
     {
         struct pam_jwt_cfg cfg;
         enum pam_jwt_cfg_status st =
-            parse_lits(&cfg, 1, "cert_file=/etc/jwt/issuer.pem",
-                       NULL, NULL, NULL, NULL, NULL, NULL);
+            parse_lits(&cfg, 1, "cert_file=/etc/jwt/issuer.pem", NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_STR_EQ(cfg.cert_file, "/etc/jwt/issuer.pem");
         ASSERT_TRUE(cfg.issuer == NULL);
         ASSERT_TRUE(cfg.audience == NULL);
         ASSERT_TRUE(cfg.map_field == NULL);
+        ASSERT_TRUE(cfg.fallback_user == NULL);
         ASSERT_TRUE(cfg.match_field == NULL);
         ASSERT_INT_EQ(cfg.clock_skew, 0);
         ASSERT_TRUE(cfg.debug == false);
@@ -115,20 +117,13 @@ TEST_GROUP(config)
     TEST("all options set at once")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 7,
-            "cert_file=/etc/jwt/issuer.pem",
-            "issuer=https://idp.example.com/",
-            "audience=pam-login",
-            "map_field=preferred_username",
-            "match_field=uid",
-            "clock_skew=30",
-            "debug");
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 8, "cert_file=/etc/jwt/issuer.pem", "issuer=https://idp.example.com/", "audience=pam-login", "map_field=preferred_username", "fallback_user=service-acct", "match_field=uid", "clock_skew=30", "debug");
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_STR_EQ(cfg.cert_file, "/etc/jwt/issuer.pem");
         ASSERT_STR_EQ(cfg.issuer, "https://idp.example.com/");
         ASSERT_STR_EQ(cfg.audience, "pam-login");
         ASSERT_STR_EQ(cfg.map_field, "preferred_username");
+        ASSERT_STR_EQ(cfg.fallback_user, "service-acct");
         ASSERT_STR_EQ(cfg.match_field, "uid");
         ASSERT_INT_EQ(cfg.clock_skew, 30);
         ASSERT_TRUE(cfg.debug == true);
@@ -139,8 +134,7 @@ TEST_GROUP(config)
     TEST("no args -> missing required")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 0, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_MISSING_REQUIRED);
         pam_jwt_cfg_free(&cfg);
     }
@@ -149,7 +143,7 @@ TEST_GROUP(config)
     {
         struct pam_jwt_cfg cfg;
         enum pam_jwt_cfg_status st =
-            parse_lits(&cfg, 1, "debug", NULL, NULL, NULL, NULL, NULL, NULL);
+            parse_lits(&cfg, 1, "debug", NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_MISSING_REQUIRED);
         ASSERT_TRUE(cfg.debug == true);
         ASSERT_TRUE(cfg.cert_file == NULL);
@@ -160,9 +154,7 @@ TEST_GROUP(config)
     TEST("duplicate cert_file")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 2, "cert_file=/a.pem", "cert_file=/b.pem",
-            NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/a.pem", "cert_file=/b.pem", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_DUPLICATE);
         pam_jwt_cfg_free(&cfg);
     }
@@ -170,9 +162,7 @@ TEST_GROUP(config)
     TEST("duplicate debug flag")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 3, "cert_file=/a.pem", "debug", "debug",
-            NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 3, "cert_file=/a.pem", "debug", "debug", NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_DUPLICATE);
         ASSERT_TRUE(cfg.debug == true);
         ASSERT_STR_EQ(cfg.cert_file, "/a.pem");
@@ -182,9 +172,7 @@ TEST_GROUP(config)
     TEST("duplicate clock_skew")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 3, "cert_file=/a.pem", "clock_skew=5", "clock_skew=10",
-            NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 3, "cert_file=/a.pem", "clock_skew=5", "clock_skew=10", NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_DUPLICATE);
         /* first value is the one that stuck */
         ASSERT_INT_EQ(cfg.clock_skew, 5);
@@ -194,10 +182,7 @@ TEST_GROUP(config)
     TEST("duplicate issuer")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 3, "cert_file=/a.pem",
-            "issuer=https://a.example/", "issuer=https://b.example/",
-            NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 3, "cert_file=/a.pem", "issuer=https://a.example/", "issuer=https://b.example/", NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_DUPLICATE);
         ASSERT_STR_EQ(cfg.issuer, "https://a.example/");
         pam_jwt_cfg_free(&cfg);
@@ -207,8 +192,7 @@ TEST_GROUP(config)
     TEST("empty value for cert_file")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 1, "cert_file=", NULL, NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 1, "cert_file=", NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         ASSERT_TRUE(cfg.cert_file == NULL);
         pam_jwt_cfg_free(&cfg);
@@ -217,8 +201,7 @@ TEST_GROUP(config)
     TEST("missing '=' separator")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 1, "cert_file", NULL, NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 1, "cert_file", NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         ASSERT_TRUE(cfg.cert_file == NULL);
         pam_jwt_cfg_free(&cfg);
@@ -227,8 +210,7 @@ TEST_GROUP(config)
     TEST("empty key (starts with '=')")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 1, "=value", NULL, NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 1, "=value", NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         pam_jwt_cfg_free(&cfg);
     }
@@ -236,9 +218,7 @@ TEST_GROUP(config)
     TEST("unknown key is rejected")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 2, "cert_file=/a.pem", "wat=42",
-            NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/a.pem", "wat=42", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         /* cert_file was parsed first and remains valid. */
         ASSERT_STR_EQ(cfg.cert_file, "/a.pem");
@@ -248,9 +228,7 @@ TEST_GROUP(config)
     TEST("clock_skew non-numeric")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 2, "cert_file=/a.pem", "clock_skew=abc",
-            NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/a.pem", "clock_skew=abc", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         /* Default preserved. */
         ASSERT_INT_EQ(cfg.clock_skew, 0);
@@ -260,9 +238,7 @@ TEST_GROUP(config)
     TEST("clock_skew negative is rejected")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 2, "cert_file=/a.pem", "clock_skew=-1",
-            NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/a.pem", "clock_skew=-1", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         ASSERT_INT_EQ(cfg.clock_skew, 0);
         pam_jwt_cfg_free(&cfg);
@@ -275,9 +251,7 @@ TEST_GROUP(config)
          * signed integers. "+30" and "30" must parse to the same value.
          * Documented in docs/config.md. */
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 2, "cert_file=/a.pem", "clock_skew=+30",
-            NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/a.pem", "clock_skew=+30", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_INT_EQ(cfg.clock_skew, 30);
         pam_jwt_cfg_free(&cfg);
@@ -287,9 +261,7 @@ TEST_GROUP(config)
     {
         struct pam_jwt_cfg cfg;
         /* INT_MAX = 2147483647 -> 99999999999 exceeds int range */
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 2, "cert_file=/a.pem", "clock_skew=99999999999",
-            NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/a.pem", "clock_skew=99999999999", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         ASSERT_INT_EQ(cfg.clock_skew, 0);
         pam_jwt_cfg_free(&cfg);
@@ -298,9 +270,7 @@ TEST_GROUP(config)
     TEST("clock_skew accepts zero but rejects second value as duplicate")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 3, "cert_file=/a.pem", "clock_skew=0", "clock_skew=+7",
-            NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 3, "cert_file=/a.pem", "clock_skew=0", "clock_skew=+7", NULL, NULL, NULL, NULL, NULL);
         /* Second clock_skew must be rejected as duplicate. */
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_DUPLICATE);
         ASSERT_INT_EQ(cfg.clock_skew, 0);
@@ -315,8 +285,7 @@ TEST_GROUP(config)
         const char *arg = "issuer=abc\x07"
                           "def";
         enum pam_jwt_cfg_status st =
-            parse_lits(&cfg, 1, arg,
-                       NULL, NULL, NULL, NULL, NULL, NULL);
+            parse_lits(&cfg, 1, arg, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         ASSERT_TRUE(cfg.issuer == NULL);
         pam_jwt_cfg_free(&cfg);
@@ -328,9 +297,7 @@ TEST_GROUP(config)
          * spaces (0x20) and higher are allowed in values. Document the
          * boundary on the high side. */
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 2, "cert_file=/a.pem", "issuer=abc def",
-            NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/a.pem", "issuer=abc def", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_STR_EQ(cfg.issuer, "abc def");
         pam_jwt_cfg_free(&cfg);
@@ -342,8 +309,7 @@ TEST_GROUP(config)
         const char *arg = "issuer=abc\x7f"
                           "def";
         enum pam_jwt_cfg_status st =
-            parse_lits(&cfg, 1, arg,
-                       NULL, NULL, NULL, NULL, NULL, NULL);
+            parse_lits(&cfg, 1, arg, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         ASSERT_TRUE(cfg.issuer == NULL);
         pam_jwt_cfg_free(&cfg);
@@ -362,9 +328,7 @@ TEST_GROUP(config)
         ASSERT_TRUE(arg_ok != NULL);
         snprintf(arg_ok, PAM_JWT_MAX_OPT_LEN + 32, "issuer=%s", ok);
 
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 2, "cert_file=/a.pem", arg_ok,
-            NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/a.pem", arg_ok, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_TRUE(cfg.issuer != NULL);
         ASSERT_INT_EQ((int)strlen(cfg.issuer), PAM_JWT_MAX_OPT_LEN);
@@ -383,8 +347,7 @@ TEST_GROUP(config)
         snprintf(arg_too_long, PAM_JWT_MAX_OPT_LEN + 64,
                  "issuer=%s", too_long);
 
-        st = parse_lits(&cfg, 2, "cert_file=/a.pem", arg_too_long,
-                        NULL, NULL, NULL, NULL, NULL);
+        st = parse_lits(&cfg, 2, "cert_file=/a.pem", arg_too_long, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         ASSERT_TRUE(cfg.issuer == NULL);
         pam_jwt_cfg_free(&cfg);
@@ -431,15 +394,7 @@ TEST_GROUP(config)
     TEST("options accepted in any order")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 7,
-            "debug",
-            "clock_skew=15",
-            "match_field=uid",
-            "map_field=sub",
-            "audience=pam-login",
-            "issuer=https://idp.example/",
-            "cert_file=/etc/jwt/issuer.pem");
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 7, "debug", "clock_skew=15", "match_field=uid", "map_field=sub", "audience=pam-login", "issuer=https://idp.example/", "cert_file=/etc/jwt/issuer.pem", NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_STR_EQ(cfg.cert_file, "/etc/jwt/issuer.pem");
         ASSERT_STR_EQ(cfg.issuer, "https://idp.example/");
@@ -459,17 +414,14 @@ TEST_GROUP(config)
     {
         struct pam_jwt_cfg cfg;
         pam_jwt_cfg_init(&cfg);
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 4, "cert_file=/a.pem", "issuer=old",
-            "clock_skew=99", "debug", NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 4, "cert_file=/a.pem", "issuer=old", "clock_skew=99", "debug", NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_STR_EQ(cfg.issuer, "old");
         ASSERT_INT_EQ(cfg.clock_skew, 99);
         ASSERT_TRUE(cfg.debug == true);
 
         /* Now re-parse with a minimal valid set; all extras should drop. */
-        st = parse_lits(&cfg, 1, "cert_file=/b.pem",
-                        NULL, NULL, NULL, NULL, NULL, NULL);
+        st = parse_lits(&cfg, 1, "cert_file=/b.pem", NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_STR_EQ(cfg.cert_file, "/b.pem");
         ASSERT_TRUE(cfg.issuer == NULL);
@@ -487,9 +439,7 @@ TEST_GROUP(config)
         struct pam_jwt_cfg cfg;
         /* A mid-stream invalid value, but some valid options were set
          * before it. cfg_free() must not double-free anything. */
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 3, "cert_file=/a.pem", "issuer=ok", "clock_skew=oops",
-            NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 3, "cert_file=/a.pem", "issuer=ok", "clock_skew=oops", NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         /* Calling free twice must not crash and must leave all pointers NULL. */
         pam_jwt_cfg_free(&cfg);
@@ -502,14 +452,13 @@ TEST_GROUP(config)
     }
 
     /* map_field and match_field default to NULL when omitted. */
-    TEST("map_field and match_field default to NULL")
+    TEST("map_field, fallback_user, and match_field default to NULL")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 1, "cert_file=/a.pem",
-            NULL, NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 1, "cert_file=/a.pem", NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_TRUE(cfg.map_field == NULL);
+        ASSERT_TRUE(cfg.fallback_user == NULL);
         ASSERT_TRUE(cfg.match_field == NULL);
         pam_jwt_cfg_free(&cfg);
     }
@@ -518,9 +467,7 @@ TEST_GROUP(config)
     TEST("map_field set alone")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 2, "cert_file=/a.pem", "map_field=email",
-            NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/a.pem", "map_field=email", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_STR_EQ(cfg.map_field, "email");
         ASSERT_TRUE(cfg.match_field == NULL);
@@ -530,9 +477,7 @@ TEST_GROUP(config)
     TEST("match_field set alone")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 2, "cert_file=/a.pem", "match_field=uid",
-            NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/a.pem", "match_field=uid", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_TRUE(cfg.map_field == NULL);
         ASSERT_STR_EQ(cfg.match_field, "uid");
@@ -542,22 +487,77 @@ TEST_GROUP(config)
     TEST("both map_field and match_field set, consistent")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 3, "cert_file=/a.pem",
-            "map_field=preferred_username", "match_field=preferred_username",
-            NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 3, "cert_file=/a.pem", "map_field=preferred_username", "match_field=preferred_username", NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_STR_EQ(cfg.map_field, "preferred_username");
         ASSERT_STR_EQ(cfg.match_field, "preferred_username");
+        ASSERT_TRUE(cfg.fallback_user == NULL);
+        pam_jwt_cfg_free(&cfg);
+    }
+
+    /* --- fallback_user --------------------------------------------------- */
+
+    TEST("fallback_user: accepted with map_field set")
+    {
+        struct pam_jwt_cfg cfg;
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 3, "cert_file=/a.pem", "map_field=preferred_username", "fallback_user=service-acct", NULL, NULL, NULL, NULL, NULL);
+        ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
+        ASSERT_STR_EQ(cfg.map_field, "preferred_username");
+        ASSERT_STR_EQ(cfg.fallback_user, "service-acct");
+        pam_jwt_cfg_free(&cfg);
+    }
+
+    TEST("fallback_user: rejected when map_field is absent")
+    {
+        /* The parser must reject fallback_user without map_field at
+         * config time, not silently ignore it: there is nothing for
+         * the fallback to substitute into if mapping is off. */
+        struct pam_jwt_cfg cfg;
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/a.pem", "fallback_user=service-acct", NULL, NULL, NULL, NULL, NULL, NULL);
+        ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
+        /* Error path must leave cfg in a free()-safe state. */
+        pam_jwt_cfg_free(&cfg);
+    }
+
+    TEST("fallback_user: rejected when map_field appears AFTER it")
+    {
+        /* The order in which options are passed must not affect the
+         * "fallback_user requires map_field" check: the parser
+         * inspects the seen-bits after the loop, so even a token that
+         * names fallback_user first is rejected unless map_field is
+         * also given somewhere in the argv. */
+        struct pam_jwt_cfg cfg;
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 3, "cert_file=/a.pem", "fallback_user=service-acct", "map_field=preferred_username", NULL, NULL, NULL, NULL, NULL);
+        ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
+        ASSERT_STR_EQ(cfg.fallback_user, "service-acct");
+        ASSERT_STR_EQ(cfg.map_field, "preferred_username");
+        pam_jwt_cfg_free(&cfg);
+    }
+
+    TEST("fallback_user: duplicate is rejected")
+    {
+        struct pam_jwt_cfg cfg;
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 4, "cert_file=/a.pem", "map_field=preferred_username", "fallback_user=service-acct", "fallback_user=other-acct", NULL, NULL, NULL, NULL);
+        ASSERT_INT_EQ(st, PAM_JWT_CFG_E_DUPLICATE);
+        ASSERT_STR_EQ(cfg.fallback_user, "service-acct");
+        pam_jwt_cfg_free(&cfg);
+    }
+
+    TEST("fallback_user: empty value is rejected")
+    {
+        /* An empty fallback_user string is malformed: the same
+         * is_valid_string() guard that protects every other string
+         * option rejects NULL / empty values here too. */
+        struct pam_jwt_cfg cfg;
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 3, "cert_file=/a.pem", "map_field=preferred_username", "fallback_user=", NULL, NULL, NULL, NULL, NULL);
+        ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         pam_jwt_cfg_free(&cfg);
     }
 
     TEST("debug is false by default")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 1, "cert_file=/a.pem",
-            NULL, NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 1, "cert_file=/a.pem", NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_TRUE(cfg.debug == false);
         pam_jwt_cfg_free(&cfg);
@@ -566,9 +566,7 @@ TEST_GROUP(config)
     TEST("clock_skew defaults to 0")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 1, "cert_file=/a.pem",
-            NULL, NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 1, "cert_file=/a.pem", NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_INT_EQ(cfg.clock_skew, 0);
         pam_jwt_cfg_free(&cfg);
@@ -601,12 +599,9 @@ TEST_GROUP(config)
          * which only succeeds when run under ASan/LSan. */
         struct pam_jwt_cfg cfg;
         pam_jwt_cfg_init(&cfg);
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 2, "cert_file=/first.pem", "issuer=first-iss",
-            NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/first.pem", "issuer=first-iss", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
-        st = parse_lits(&cfg, 2, "cert_file=/second.pem", "issuer=second-iss",
-                        NULL, NULL, NULL, NULL, NULL);
+        st = parse_lits(&cfg, 2, "cert_file=/second.pem", "issuer=second-iss", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_STR_EQ(cfg.cert_file, "/second.pem");
         ASSERT_STR_EQ(cfg.issuer, "second-iss");
@@ -631,15 +626,7 @@ TEST_GROUP(config)
     TEST("leak: full happy-path parse + free")
     {
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 7,
-            "cert_file=/etc/jwt/issuer.pem",
-            "issuer=https://idp.example.com/",
-            "audience=pam-login",
-            "map_field=preferred_username",
-            "match_field=uid",
-            "clock_skew=30",
-            "debug");
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 7, "cert_file=/etc/jwt/issuer.pem", "issuer=https://idp.example.com/", "audience=pam-login", "map_field=preferred_username", "match_field=uid", "clock_skew=30", "debug", NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_STR_EQ(cfg.cert_file, "/etc/jwt/issuer.pem");
         ASSERT_STR_EQ(cfg.issuer, "https://idp.example.com/");
@@ -659,14 +646,7 @@ TEST_GROUP(config)
         struct pam_jwt_cfg cfg;
         for (int i = 0; i < 16; ++i)
         {
-            enum pam_jwt_cfg_status st = parse_lits(
-                &cfg, 5,
-                "cert_file=/path/a/cert.pem",
-                "issuer=https://idp.example/old",
-                "audience=pam-login",
-                "map_field=sub",
-                "match_field=uid",
-                NULL, NULL);
+            enum pam_jwt_cfg_status st = parse_lits(&cfg, 5, "cert_file=/path/a/cert.pem", "issuer=https://idp.example/old", "audience=pam-login", "map_field=sub", "match_field=uid", NULL, NULL, NULL);
             ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         }
         pam_jwt_cfg_free(&cfg);
@@ -679,9 +659,7 @@ TEST_GROUP(config)
          * installed the first string into the cfg. cfg_free() at the
          * end must release that allocation. */
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 2, "cert_file=/a.pem", "cert_file=/b.pem",
-            NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/a.pem", "cert_file=/b.pem", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_DUPLICATE);
         ASSERT_STR_EQ(cfg.cert_file, "/a.pem");
         pam_jwt_cfg_free(&cfg);
@@ -694,9 +672,7 @@ TEST_GROUP(config)
          * so cfg_free() can release them. LSan will flag any leak
          * here. */
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 3, "cert_file=/a.pem", "issuer=https://idp.example/",
-            "clock_skew=oops", NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 3, "cert_file=/a.pem", "issuer=https://idp.example/", "clock_skew=oops", NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         ASSERT_STR_EQ(cfg.cert_file, "/a.pem");
         ASSERT_STR_EQ(cfg.issuer, "https://idp.example/");
@@ -710,8 +686,7 @@ TEST_GROUP(config)
          * nothing to free, but the test guards against a future
          * change that allocates before validation. */
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 1, "wat=42", NULL, NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 1, "wat=42", NULL, NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
         pam_jwt_cfg_free(&cfg);
     }
@@ -738,11 +713,7 @@ TEST_GROUP(config)
         struct pam_jwt_cfg cfg;
         for (int i = 0; i < 32; ++i)
         {
-            enum pam_jwt_cfg_status st = parse_lits(
-                &cfg, 2,
-                "cert_file=/etc/jwt/issuer.pem",
-                "issuer=https://idp.example/",
-                NULL, NULL, NULL, NULL, NULL);
+            enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/etc/jwt/issuer.pem", "issuer=https://idp.example/", NULL, NULL, NULL, NULL, NULL, NULL);
             ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
             pam_jwt_cfg_free(&cfg);
         }
@@ -755,13 +726,9 @@ TEST_GROUP(config)
          * pam_jwt_cfg_init() which must free the first cert_file
          * before the new str_dup() runs. */
         struct pam_jwt_cfg cfg;
-        enum pam_jwt_cfg_status st = parse_lits(
-            &cfg, 2, "cert_file=/a.pem", "issuer=",
-            NULL, NULL, NULL, NULL, NULL);
+        enum pam_jwt_cfg_status st = parse_lits(&cfg, 2, "cert_file=/a.pem", "issuer=", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_E_INVALID_VALUE);
-        st = parse_lits(
-            &cfg, 2, "cert_file=/b.pem", "issuer=https://idp.example/",
-            NULL, NULL, NULL, NULL, NULL);
+        st = parse_lits(&cfg, 2, "cert_file=/b.pem", "issuer=https://idp.example/", NULL, NULL, NULL, NULL, NULL, NULL);
         ASSERT_INT_EQ(st, PAM_JWT_CFG_OK);
         ASSERT_STR_EQ(cfg.cert_file, "/b.pem");
         ASSERT_STR_EQ(cfg.issuer, "https://idp.example/");

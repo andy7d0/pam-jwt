@@ -5,8 +5,11 @@
  * src/jwt_verify.c:
  *
  *   - map_field: sets *out_mapped_user from the configured claim
- *   - map_field: missing claim in token -> AUTH_ERR
- *   - map_field: empty claim value in token -> AUTH_ERR (no empty PAM_USER)
+ *   - map_field: missing claim in token -> AUTH_ERR (or fallback_user)
+ *   - map_field: empty claim value in token -> AUTH_ERR (or fallback_user)
+ *   - fallback_user: substitutes for a missing/empty map_field claim
+ *   - fallback_user: ignored when map_field claim is present and non-empty
+ *   - fallback_user: does NOT participate in match_field binding
  *   - match_field: equal to requested user -> success
  *   - match_field: mismatch -> PAM_USER_UNKNOWN
  *   - match_field: empty claim value in token -> USER_UNKNOWN (binding fails)
@@ -465,6 +468,146 @@ TEST_GROUP(users)
         char *mapped = (char *)0xdeadbeef;
         ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok,
                                      "bob@example.com", &mapped),
+                      PAM_USER_UNKNOWN);
+        ASSERT_TRUE(mapped == NULL);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    /* --- fallback_user ----------------------------------------------------
+     *
+     * fallback_user only matters when map_field is set: the verifier
+     * substitutes the configured string for the mapped claim when the
+     * token omits (or empties) the claim. The substitution is a
+     * mapping concern -- it never participates in the match_field
+     * binding check.
+     */
+
+    TEST("fallback_user: missing claim -> success, mapped == fallback")
+    {
+        ensure_path();
+        /* Token has no "preferred_username" claim at all. Without
+         * fallback_user this would fail with PAM_AUTH_ERR; with it,
+         * the verifier substitutes the configured string and succeeds. */
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.map_field = pam_jwt_strdup("preferred_username");
+        cfg.fallback_user = pam_jwt_strdup("service-acct");
+        char *mapped = NULL;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "ignored", &mapped),
+                      PAM_SUCCESS);
+        ASSERT_TRUE(mapped != NULL);
+        ASSERT_STR_EQ(mapped, "service-acct");
+        free(mapped);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("fallback_user: empty claim -> success, mapped == fallback")
+    {
+        ensure_path();
+        /* Token carries the claim but the value is the empty string.
+         * Without fallback_user this would fail with PAM_AUTH_ERR; with
+         * it, the verifier substitutes the configured string. */
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--claim", "preferred_username=", NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.map_field = pam_jwt_strdup("preferred_username");
+        cfg.fallback_user = pam_jwt_strdup("service-acct");
+        char *mapped = (char *)0xdeadbeef;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "ignored", &mapped),
+                      PAM_SUCCESS);
+        ASSERT_TRUE(mapped != NULL);
+        ASSERT_STR_EQ(mapped, "service-acct");
+        free(mapped);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("fallback_user: populated claim -> mapped == claim, NOT fallback")
+    {
+        ensure_path();
+        /* When the token carries a non-empty claim, the verifier must
+         * use it -- fallback_user is only consulted when the claim is
+         * absent or empty. */
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--claim", "preferred_username=alice", NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.map_field = pam_jwt_strdup("preferred_username");
+        cfg.fallback_user = pam_jwt_strdup("service-acct");
+        char *mapped = NULL;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "ignored", &mapped),
+                      PAM_SUCCESS);
+        ASSERT_TRUE(mapped != NULL);
+        ASSERT_STR_EQ(mapped, "alice");
+        free(mapped);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("fallback_user: ignored when map_field is unset")
+    {
+        /* Sanity check: with map_field off, fallback_user is dead
+         * config -- the verifier never consults it, never sets a
+         * mapped user, and the token still verifies. */
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.fallback_user = pam_jwt_strdup("service-acct");
+        char *mapped = (char *)0xdeadbeef;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "alice", &mapped),
+                      PAM_SUCCESS);
+        ASSERT_TRUE(mapped == NULL);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("fallback_user: match_field still binds even when fallback applies")
+    {
+        /* The fallback substitution does NOT participate in the
+         * match_field binding. Here the token has no mapped claim
+         * (so fallback_user wins for the mapped user) but the
+         * match_field claim IS present and must still equal the
+         * requested user. */
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "internal-id",
+                               "--claim", "username=alice", NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.map_field = pam_jwt_strdup("preferred_username");
+        cfg.fallback_user = pam_jwt_strdup("service-acct");
+        cfg.match_field = pam_jwt_strdup("username");
+        char *mapped = (char *)0xdeadbeef;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "alice", &mapped),
+                      PAM_SUCCESS);
+        ASSERT_TRUE(mapped != NULL);
+        ASSERT_STR_EQ(mapped, "service-acct");
+        free(mapped);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("fallback_user: match_field mismatch still rejects even when fallback applies")
+    {
+        /* Same as above but the binding fails: fallback_user must
+         * NOT silently grant access when the match_field claim does
+         * not equal the requested user. */
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "internal-id",
+                               "--claim", "username=alice", NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.map_field = pam_jwt_strdup("preferred_username");
+        cfg.fallback_user = pam_jwt_strdup("service-acct");
+        cfg.match_field = pam_jwt_strdup("username");
+        char *mapped = (char *)0xdeadbeef;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "bob", &mapped),
                       PAM_USER_UNKNOWN);
         ASSERT_TRUE(mapped == NULL);
         pam_jwt_cfg_free(&cfg);

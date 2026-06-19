@@ -6,7 +6,9 @@ checked against the public key extracted from an issuer X.509 certificate.
 Issuer and audience claims are optionally validated. The target user can be
 mapped from a configurable JWT claim (`map_field`) and/or a configurable claim
 can be required to equal the requesting user (`match_field`). Both username
-options are independent and default off.
+options are independent and default off. An optional `fallback_user`
+substitutes for the mapped claim when it is missing or empty in a verified
+token, but never participates in the `match_field` binding check.
 
 ## Status
 

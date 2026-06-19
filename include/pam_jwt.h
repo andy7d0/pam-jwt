@@ -35,13 +35,14 @@ extern "C"
      * optional fields are NULL when not configured. */
     struct pam_jwt_cfg
     {
-        char *cert_file;   /* required: path to issuer X.509 cert (PEM) */
-        char *issuer;      /* optional: required value of "iss" claim */
-        char *audience;    /* optional: required value of "aud" claim */
-        char *map_field;   /* optional: claim name to set PAM user from */
-        char *match_field; /* optional: claim name required to equal user */
-        int clock_skew;    /* optional: leeway in seconds for exp/nbf */
-        bool debug;        /* optional: enable pam_syslog debug logging */
+        char *cert_file;     /* required: path to issuer X.509 cert (PEM) */
+        char *issuer;        /* optional: required value of "iss" claim */
+        char *audience;      /* optional: required value of "aud" claim */
+        char *map_field;     /* optional: claim name to set PAM user from */
+        char *fallback_user; /* optional: PAM user when map_field absent */
+        char *match_field;   /* optional: claim name required to equal user */
+        int clock_skew;      /* optional: leeway in seconds for exp/nbf */
+        bool debug;          /* optional: enable pam_syslog debug logging */
     };
 
     /* Result of parsing PAM argc/argv. */
@@ -201,6 +202,15 @@ extern "C"
      * is set to a freshly malloc'd, NUL-terminated copy of the mapped claim
      * value. The caller owns it and must release it with free(). When
      * map_field is not configured the field is set to NULL.
+     *
+     * If cfg->map_field is configured AND cfg->fallback_user is configured
+     * AND the token does not carry a usable mapped claim (missing, non-
+     * string, or empty), *out_mapped_user is populated with a freshly
+     * malloc'd copy of cfg->fallback_user instead of the verifier failing.
+     * In that case the mapped-user check is still satisfied (PAM_SUCCESS),
+     * but binding via cfg->match_field continues to compare the requested
+     * user against the corresponding claim value -- the fallback does NOT
+     * participate in the match_field check.
      *
      * Return codes follow the Linux-PAM convention:
      *   - PAM_SUCCESS (0): authentication succeeds
