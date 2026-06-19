@@ -217,6 +217,181 @@ static bool str_eq(const char *a, const char *b)
     return strcmp(a, b) == 0;
 }
 
+/* Skip JSON whitespace at p. Returns a pointer to the first non-WS byte
+ * or to the trailing NUL. */
+static const char *json_skip_ws(const char *p)
+{
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+    {
+        p++;
+    }
+    return p;
+}
+
+/* Decode the JSON string starting just past the opening double-quote at
+ * pp. Writes the decoded bytes into out (capacity out_cap) and NUL-
+ * terminates on success. On return *pp points just past the closing
+ * double-quote (or the trailing NUL on malformed input). Returns false
+ * on overflow or an unterminated string.
+ *
+ * The JSON escape sequences RFC 8259 mandates inside a string literal
+ * are handled: \" \\ \/ \n \t \r \b \f. Other escapes (notably \uXXXX)
+ * are passed through verbatim, which is deliberately lenient -- the
+ * input here comes from a JWT we have already parsed, so a strictly
+ * conforming decode is not required for security. */
+static bool json_decode_string(const char **pp, char *out, size_t out_cap)
+{
+    const char *p = *pp;
+    size_t n = 0;
+    while (*p != '\0')
+    {
+        char c = *p;
+        if (c == '"')
+        {
+            p++;
+            if (n + 1U >= out_cap)
+            {
+                return false;
+            }
+            out[n] = '\0';
+            *pp = p;
+            return true;
+        }
+        if (c == '\\' && p[1] != '\0')
+        {
+            p++;
+            switch (*p)
+            {
+            case '"':
+                c = '"';
+                break;
+            case '\\':
+                c = '\\';
+                break;
+            case '/':
+                c = '/';
+                break;
+            case 'n':
+                c = '\n';
+                break;
+            case 't':
+                c = '\t';
+                break;
+            case 'r':
+                c = '\r';
+                break;
+            case 'b':
+                c = '\b';
+                break;
+            case 'f':
+                c = '\f';
+                break;
+            default:
+                /* Unknown escape (e.g. unicode). Pass through both
+                 * the backslash and the next char verbatim. */
+                if (n + 2U >= out_cap)
+                {
+                    return false;
+                }
+                out[n++] = '\\';
+                c = *p;
+                p++;
+                out[n++] = c;
+                continue;
+            }
+            p++;
+        }
+        else
+        {
+            p++;
+        }
+        if (n + 1U >= out_cap)
+        {
+            return false;
+        }
+        out[n++] = c;
+    }
+    /* Unterminated string. */
+    return false;
+}
+
+/* Return true iff needle equals one of the JSON string elements of the
+ * JSON array at arr. The array must start with [. Comparison is byte-
+ * for-byte after JSON unescaping, which matches the cfg-side value
+ * (operators configure audience as plain strings, never JSON). */
+static bool array_contains_string(const char *arr, const char *needle)
+{
+    const char *p = json_skip_ws(arr);
+    if (*p != '[')
+    {
+        return false;
+    }
+    p++;
+    char buf[1024];
+    for (;;)
+    {
+        p = json_skip_ws(p);
+        if (*p == ']')
+        {
+            return false;
+        }
+        if (*p != '"')
+        {
+            /* Non-string element (number, object, ...) is not a match. */
+            return false;
+        }
+        p++;
+        if (!json_decode_string(&p, buf, sizeof(buf)))
+        {
+            return false;
+        }
+        if (strcmp(buf, needle) == 0)
+        {
+            return true;
+        }
+        p = json_skip_ws(p);
+        if (*p == ',')
+        {
+            p++;
+            continue;
+        }
+        if (*p == ']')
+        {
+            return false;
+        }
+        /* Malformed: missing comma or closing bracket. */
+        return false;
+    }
+}
+
+/* Implement the audience containment check described in docs/config.md:
+ *   1. If the token's aud claim is a JSON string and equals expected,
+ *      return true.
+ *   2. If the token's aud claim is a JSON array of strings and one of
+ *      the elements equals expected, return true.
+ *   3. Otherwise (missing claim, wrong type, or no match), return
+ *      false.
+ *
+ * libjwt's jwt_get_grant() only returns string-typed grants, so the
+ * array path is reached via jwt_get_grants_json(). Both return paths
+ * leave a malloc'd string from libjwt that we must release. */
+static bool audience_matches(jwt_t *jwt, const char *expected)
+{
+    const char *aud_str = jwt_get_grant(jwt, "aud");
+    if (aud_str != NULL)
+    {
+        return strcmp(aud_str, expected) == 0;
+    }
+    char *aud_json = jwt_get_grants_json(jwt, "aud");
+    if (aud_json == NULL)
+    {
+        return false;
+    }
+    bool ok = array_contains_string(aud_json, expected);
+    free(aud_json);
+    return ok;
+}
+
 /* Validate time-based claims (exp, nbf) using libjwt's validation object.
  * Returns true on success. */
 static bool check_time_claims(jwt_t *jwt, int clock_skew)
@@ -366,18 +541,14 @@ int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
      * as a single string (which is what RFC 7519 allows for the common
      * case). If the token's `aud` is an array, jwt_get_grant returns NULL
      * and the claim mismatches. */
-    if (cfg->audience != NULL)
+    if (cfg->audience != NULL && !audience_matches(jwt, cfg->audience))
     {
-        const char *aud = jwt_get_grant(jwt, "aud");
-        if (!str_eq(aud, cfg->audience))
-        {
-            pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
-                        "pam_jwt: aud claim does not match");
-            jwt_free(jwt);
-            memset(pubkey_pem, 0, pubkey_len);
-            free(pubkey_pem);
-            return PAM_AUTH_ERR;
-        }
+        pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
+                    "pam_jwt: aud claim does not match");
+        jwt_free(jwt);
+        memset(pubkey_pem, 0, pubkey_len);
+        free(pubkey_pem);
+        return PAM_AUTH_ERR;
     }
 
     /* Optional username binding: required claim must equal requested_user.

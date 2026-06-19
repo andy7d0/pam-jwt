@@ -306,6 +306,126 @@ TEST_GROUP(claims)
         free(tok);
     }
 
+    /* --- aud array semantics -----------------------------------------------
+     *
+     * RFC 7519 lets the `aud` claim be a JSON array of strings as well
+     * as a single string. docs/config.md mandates containment: if `aud`
+     * is an array, the configured audience must equal one of its
+     * elements. These cases exercise that branch via --aud-json in
+     * tests/fixtures/make_jwt.c.
+     */
+
+    TEST("aud array: element match -> success")
+    {
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--aud-json",
+                               "[\"my-service\",\"other-service\"]",
+                               NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.audience = pam_jwt_strdup("my-service");
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "anyone", NULL),
+                      PAM_SUCCESS);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("aud array: non-first element match -> success")
+    {
+        ensure_path();
+        /* The matcher must scan the whole array, not just [0]. */
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--aud-json",
+                               "[\"first\",\"second\",\"third\"]",
+                               NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.audience = pam_jwt_strdup("third");
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "anyone", NULL),
+                      PAM_SUCCESS);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("aud array: no element matches -> AUTH_ERR")
+    {
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--aud-json",
+                               "[\"my-service\",\"other-service\"]",
+                               NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.audience = pam_jwt_strdup("evil-service");
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "anyone", NULL),
+                      PAM_AUTH_ERR);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("aud array: empty array -> AUTH_ERR")
+    {
+        ensure_path();
+        /* An empty aud list is well-formed JSON but no value can match
+         * the configured audience. */
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--aud-json", "[]", NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.audience = pam_jwt_strdup("my-service");
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "anyone", NULL),
+                      PAM_AUTH_ERR);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("aud array: configured but token has no aud -> AUTH_ERR")
+    {
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.audience = pam_jwt_strdup("my-service");
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "anyone", NULL),
+                      PAM_AUTH_ERR);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("aud array: token carries array but cfg has no audience -> success")
+    {
+        ensure_path();
+        /* When the operator does not configure `audience`, the array
+         * claim is purely informational and must not cause a failure. */
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--aud-json",
+                               "[\"my-service\",\"other-service\"]",
+                               NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "anyone", NULL),
+                      PAM_SUCCESS);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("aud array: string aud still works (regression)")
+    {
+        ensure_path();
+        /* Sanity: --aud-json must not have broken the plain-string path
+         * which is exercised by the rest of the aud tests above. */
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--aud", "my-service", NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.audience = pam_jwt_strdup("my-service");
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "anyone", NULL),
+                      PAM_SUCCESS);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
     /* --- exp / nbf -------------------------------------------------------- */
 
     TEST("exp: expired token -> AUTH_ERR")

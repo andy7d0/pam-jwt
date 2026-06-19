@@ -6,7 +6,8 @@
  * speaks the same flags the unit tests need:
  *
  *   make_jwt --alg <RS256|ES256|none> --key <path>
- *             [--iss <s>] [--aud <s>] [--sub <s>]
+ *             [--iss <s>] [--aud <s>] [--aud-json <json-array>]
+ *             [--sub <s>]
  *             [--exp <unix-secs>] [--nbf <unix-secs>]
  *             [--claim key=value ...]
  *
@@ -14,8 +15,12 @@
  * success, non-zero on any failure.
  *
  * The claim flags let tests fabricate the specific shape of token they
- * need (mapping, binding, mismatch, expired, ...) without growing the
- * helper into a small config language.
+ * need (mapping, binding, mismatch, expired, array-aud, ...) without
+ * growing the helper into a small config language.
+ *
+ * --aud and --aud-json are mutually exclusive: --aud writes the aud
+ * claim as a plain JSON string, --aud-json writes it as a JSON array
+ * verbatim (used to test the array-audience code path in the verifier).
  */
 
 #include <ctype.h>
@@ -142,6 +147,7 @@ int main(int argc, char *argv[])
     const char *key_path = NULL;
     const char *iss = NULL;
     const char *aud = NULL;
+    const char *aud_json = NULL;
     const char *sub = NULL;
     long exp = 0;
     long nbf = 0;
@@ -150,6 +156,7 @@ int main(int argc, char *argv[])
 
     /* Tracks which args we already saw so duplicates surface loudly. */
     bool saw_alg = false, saw_key = false, saw_iss = false, saw_aud = false;
+    bool saw_aud_json = false;
     bool saw_sub = false, saw_exp = false, saw_nbf = false;
 
     if (argc < 2)
@@ -215,6 +222,20 @@ int main(int argc, char *argv[])
                 return 2;
             }
             saw_aud = true;
+        }
+        else if (strcmp(a, "--aud-json") == 0)
+        {
+            if (saw_aud_json)
+            {
+                fprintf(stderr, "make_jwt: --aud-json given twice\n");
+                return 2;
+            }
+            aud_json = arg_value(argv, argc, &i, "--aud-json");
+            if (aud_json == NULL)
+            {
+                return 2;
+            }
+            saw_aud_json = true;
         }
         else if (strcmp(a, "--sub") == 0)
         {
@@ -302,6 +323,11 @@ int main(int argc, char *argv[])
         fprintf(stderr, "make_jwt: --key is required\n");
         goto usage;
     }
+    if (saw_aud && saw_aud_json)
+    {
+        fprintf(stderr, "make_jwt: --aud and --aud-json are mutually exclusive\n");
+        return 2;
+    }
 
     jwt_alg_t alg = jwt_str_alg(alg_str);
     if (alg == JWT_ALG_INVAL)
@@ -346,6 +372,33 @@ int main(int argc, char *argv[])
     if (aud != NULL && jwt_add_grant(jwt, "aud", aud) != 0)
     {
         goto jwt_err;
+    }
+    if (aud_json != NULL)
+    {
+        /* libjwt's jwt_add_grants_json() requires a JSON object whose
+         * top level is the claim hash, so wrap the user-supplied array
+         * in {"aud": [...]}. The wrapper is built on the stack; the
+         * combined length is bounded by the input plus a fixed prefix
+         * and suffix, so a small buffer is enough. */
+        size_t in_len = strlen(aud_json);
+        if (in_len + 16U > 1024U)
+        {
+            fprintf(stderr, "make_jwt: --aud-json too long\n");
+            goto jwt_err;
+        }
+        char wrapped[1024];
+        int n = snprintf(wrapped, sizeof(wrapped),
+                         "{\"aud\":%s}", aud_json);
+        if (n < 0 || (size_t)n >= sizeof(wrapped))
+        {
+            fprintf(stderr, "make_jwt: --aud-json too long\n");
+            goto jwt_err;
+        }
+        if (jwt_add_grants_json(jwt, wrapped) != 0)
+        {
+            fprintf(stderr, "make_jwt: invalid --aud-json (must be a JSON array)\n");
+            goto jwt_err;
+        }
     }
     if (sub != NULL && jwt_add_grant(jwt, "sub", sub) != 0)
     {
@@ -395,7 +448,8 @@ jwt_err:
 usage:
     fprintf(stderr,
             "usage: make_jwt --key <pem> [--alg RS256|ES256|none]\n"
-            "                 [--iss S] [--aud S] [--sub S]\n"
+            "                 [--iss S] [--aud S] [--aud-json <json-array>]\n"
+            "                 [--sub S]\n"
             "                 [--exp N] [--nbf N]\n"
             "                 [--claim key=value ...]\n");
     return 2;
