@@ -383,17 +383,23 @@ TEST_GROUP(jwt_verify)
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
         ASSERT_TRUE(tok != NULL);
-        size_t n = strlen(tok);
-        /* Flip the last base64url char of the signature segment. */
-        char *last = tok + n - 1;
-        if (*last == 'A')
-        {
-            *last = 'B';
-        }
-        else
-        {
-            *last = 'A';
-        }
+        /* Flip a byte in the middle of the signature segment, well
+         * clear of the trailing base64 padding bits. base64url
+         * encodes 3 input bytes as 4 chars, and the last input byte
+         * of any base64url group whose input length is not a
+         * multiple of 3 contributes only the high bits of the
+         * final char -- the low bits are zero-padded and not part
+         * of the signature, so flipping the very last char can
+         * leave the signature byte-identical. We find the second
+         * '.' (the boundary between payload and signature) and
+         * toggle a char 4 positions past it, which lands squarely
+         * inside a fully-decoded signature byte. */
+        const char *sig = strchr(tok, '.');
+        ASSERT_TRUE(sig != NULL);
+        sig = strchr(sig + 1, '.');
+        ASSERT_TRUE(sig != NULL);
+        char *target = (char *)sig + 4;
+        *target = (*target == 'A') ? 'B' : 'A';
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
         ASSERT_INT_EQ(verify(&cfg, tok, "anyone", NULL), PAM_AUTH_ERR);
         pam_jwt_cfg_free(&cfg);

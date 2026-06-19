@@ -142,10 +142,19 @@ ASAN_BUILDDIR := $(BUILDDIR)/asan
 # under $(TESTDIR) are likewise. Keep this list in sync as new
 # tests land -- if a new test_*.c is added, append its object here
 # and the corresponding forward decl + call in tests/run_tests.c.
+# Library objects linked into the ASan test binary. Note that
+# pam_jwt.o is deliberately NOT in this list: linking it into
+# run_tests would define pam_sm_authenticate() and friends in the
+# test process, conflicting with the dlopen() of the .so in the
+# pam_harness integration tests. The .so gets its own list below.
 ASAN_LIB_OBJS := \
     $(ASAN_BUILDDIR)/config.o \
     $(ASAN_BUILDDIR)/jwt_verify.o \
     $(ASAN_BUILDDIR)/util.o
+
+ASAN_SO_OBJS := \
+    $(ASAN_LIB_OBJS) \
+    $(ASAN_BUILDDIR)/pam_jwt.o
 
 ASAN_TEST_OBJS := \
     $(ASAN_BUILDDIR)/tests/run_tests.o \
@@ -160,7 +169,7 @@ ASAN_TEST_OBJS := \
 test-asan:
 	@echo "== building with ASan + UBSan =="
 	@$(MAKE) --no-print-directory clean
-	@mkdir -p $(ASAN_BUILDDIR)/tests
+	@mkdir -p $(ASAN_BUILDDIR)/tests $(BUILDDIR)
 	@for f in $(SRCDIR)/*.c; do \
 	    $(CC) $(COMMON_CFLAGS) $(ASAN_FLAGS) -c $$f -o $(ASAN_BUILDDIR)/$$(basename $$f .c).o; \
 	done
@@ -172,6 +181,16 @@ test-asan:
 	@$(CC) -o $(ASAN_BUILDDIR)/run_tests \
 	    $(ASAN_TEST_OBJS) $(ASAN_LIB_OBJS) \
 	    $(PKG_LDLIBS) $(ASAN_LDLIBS) -ldl
+	# The pam_harness integration tests dlopen() pam_jwt.so via libpam,
+	# so we must also build the .so (with ASan instrumentation baked in)
+	# and place it at the path tests/pam_harness.c hard-codes. Note
+	# that the .so object list is ASAN_SO_OBJS, not ASAN_LIB_OBJS: the
+	# latter deliberately omits pam_jwt.o to avoid double-defining
+	# pam_sm_authenticate() inside run_tests.
+	@$(CC) -shared -Wl,-soname,pam_jwt.so \
+	    -o $(BUILDDIR)/pam_jwt.so \
+	    $(ASAN_SO_OBJS) \
+	    $(PKG_LDLIBS) $(ASAN_LDLIBS)
 	@echo "== running under ASan =="
 	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 \
 	 ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1:halt_on_error=1 \

@@ -36,6 +36,7 @@
 #include <unistd.h>
 
 #include <security/pam_appl.h>
+#include <linux/limits.h>
 
 /* --- paths & helpers ------------------------------------------------------- */
 
