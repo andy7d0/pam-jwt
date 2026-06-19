@@ -6,8 +6,10 @@
  *
  *   - map_field: sets *out_mapped_user from the configured claim
  *   - map_field: missing claim in token -> AUTH_ERR
+ *   - map_field: empty claim value in token -> AUTH_ERR (no empty PAM_USER)
  *   - match_field: equal to requested user -> success
  *   - match_field: mismatch -> PAM_USER_UNKNOWN
+ *   - match_field: empty claim value in token -> USER_UNKNOWN (binding fails)
  *   - both off: verification succeeds with no mapping
  *   - both on, consistent: success, mapped user populated
  *   - both on, inconsistent: PAM_USER_UNKNOWN (binding fires first)
@@ -203,6 +205,56 @@ TEST_GROUP(users)
         cfg.map_field = pam_jwt_strdup("preferred_username");
         char *mapped = (char *)0xdeadbeef;
         ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "ignored", &mapped),
+                      PAM_AUTH_ERR);
+        ASSERT_TRUE(mapped == NULL);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("map_field: empty claim value -> AUTH_ERR, *out_mapped = NULL")
+    {
+        /* docs/config.md says the mapped claim must be non-empty. A
+         * token whose map_field claim is an empty string is well-
+         * formed JSON but must NOT be promoted to PAM_USER as "".
+         * The verifier rejects it with PAM_AUTH_ERR so the failure
+         * is symmetric with the missing-claim path and we never
+         * surface an empty username to setcred. */
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--claim", "preferred_username=", NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.map_field = pam_jwt_strdup("preferred_username");
+        char *mapped = (char *)0xdeadbeef;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "ignored", &mapped),
+                      PAM_AUTH_ERR);
+        ASSERT_TRUE(mapped == NULL);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("map_field: empty claim value, match_field also on -> AUTH_ERR (not USER_UNKNOWN)")
+    {
+        /* When both map_field and match_field are configured and the
+         * map_field claim is empty, the verifier must reject at the
+         * mapping step (PAM_AUTH_ERR) rather than fall through to
+         * the binding check, which would surface a misleading
+         * PAM_USER_UNKNOWN. Order is: match_field first, then
+         * map_field, so an empty match_field claim still triggers
+         * the binding path -- here we leave match_field's claim
+         * non-empty so the binding passes and only the empty
+         * map_field can fire. */
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "internal-id",
+                               "--claim", "username=alice",
+                               "--claim", "preferred_username=", NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.match_field = pam_jwt_strdup("username");
+        cfg.map_field = pam_jwt_strdup("preferred_username");
+        char *mapped = (char *)0xdeadbeef;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "alice", &mapped),
                       PAM_AUTH_ERR);
         ASSERT_TRUE(mapped == NULL);
         pam_jwt_cfg_free(&cfg);

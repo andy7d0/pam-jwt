@@ -569,7 +569,13 @@ int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
     }
 
     /* Optional username mapping: hand the caller a malloc'd copy of the
-     * claim value when map_field is configured. */
+     * claim value when map_field is configured. The mapped claim must
+     * exist AND be non-empty: docs/config.md documents the mapped user
+     * as a PAM user name and an empty string here would either be
+     * promoted to PAM_USER as "" or, if match_field is also on, fail
+     * the binding check with a confusing PAM_USER_UNKNOWN. Reject up
+     * front with PAM_AUTH_ERR so the failure mode is consistent with
+     * the "missing claim" path and never produces an empty user. */
     if (cfg->map_field != NULL && out_mapped_user != NULL)
     {
         const char *claim = jwt_get_grant(jwt, cfg->map_field);
@@ -577,6 +583,15 @@ int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
         {
             pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
                         "pam_jwt: map_field claim missing in token");
+            jwt_free(jwt);
+            memset(pubkey_pem, 0, pubkey_len);
+            free(pubkey_pem);
+            return PAM_AUTH_ERR;
+        }
+        if (claim[0] == '\0')
+        {
+            pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
+                        "pam_jwt: map_field claim is empty in token");
             jwt_free(jwt);
             memset(pubkey_pem, 0, pubkey_len);
             free(pubkey_pem);

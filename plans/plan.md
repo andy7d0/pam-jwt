@@ -226,7 +226,7 @@ the [`Makefile`](../Makefile), and the docs. Ordered by priority.
       (`pam_sm_setcred`, `pam_sm_acct_mgmt`,
       `pam_sm_open_session`/`close_session`, `pam_sm_chauthtok`) are
       documented separately below the table.
-- [ ] **`map_field` empty-value rejection is documented but not enforced.**
+- [x] **`map_field` empty-value rejection is documented but not enforced.**
       [`docs/config.md`](../docs/config.md) states the mapped claim must be
       non-empty. The mapping path in [`src/jwt_verify.c`](../src/jwt_verify.c)
       only checks `claim == NULL`, so an empty-string `""` map claim is
