@@ -178,3 +178,76 @@ Implementation checklist (update status as work lands):
   "`make clean && make && make test` passes with no warnings", which
   is satisfied.
 - **v0.1.0 tag.** Ready to push once the tag commit is drafted.
+
+## Post-review follow-ups (from non-test code review)
+
+Tracked findings from a careful review of [`include/pam_jwt.h`](../include/pam_jwt.h),
+[`src/pam_jwt.c`](../src/pam_jwt.c), [`src/config.c`](../src/config.c),
+[`src/jwt_verify.c`](../src/jwt_verify.c), [`src/util.c`](../src/util.c),
+the [`Makefile`](../Makefile), and the docs. Ordered by priority.
+
+### High — code/doc vs. spec mismatches
+
+- [ ] **`audience` array semantics documented but not implemented.**
+      [`docs/config.md`](../docs/config.md) and
+      [`examples/pam-jwt.conf`](../examples/pam-jwt.conf) promise array-aware
+      containment ("If `aud` is an array, the configured value must be one of
+      its elements"), but [`src/jwt_verify.c`](../src/jwt_verify.c) uses
+      `jwt_get_grant(jwt, "aud")` + exact `str_eq`, which rejects arrays
+      outright (libjwt returns `NULL` for a JSON array). Either implement
+      array iteration (e.g. `jwt_get_grants_json` + JSON parsing, or libjwt's
+      `jwt_valid_set_aud`/validation) or fix the docs to state string-only
+      matching. This is also a real interop gap: RFC 7519 permits `aud` to be
+      an array.
+- [ ] **Return-code table in [`docs/config.md`](../docs/config.md) is wrong
+      vs. code.**
+      - `PAM_AUTHTOK_ERR` is listed but [`src/pam_jwt.c`](../src/pam_jwt.c)
+        returns `PAM_AUTH_ERR` when `pam_get_authtok` fails or the token is
+        empty.
+      - `PAM_USER_UNKNOWN` is documented as "`pam_get_user()` returned no
+        user" only; it is also returned by [`src/jwt_verify.c`](../src/jwt_verify.c)
+        when `match_field` does not equal the requested user — absent from
+        the docs.
+- [ ] **`map_field` empty-value rejection is documented but not enforced.**
+      [`docs/config.md`](../docs/config.md) states the mapped claim must be
+      non-empty. The mapping path in [`src/jwt_verify.c`](../src/jwt_verify.c)
+      only checks `claim == NULL`, so an empty-string `""` map claim is
+      accepted and promoted to `PAM_USER` as an empty name. Add an explicit
+      `claim[0] == '\0'` rejection.
+
+### Medium — correctness/robustness
+
+- [ ] **`clock_skew` status masking.** `check_time_claims` in
+      [`src/jwt_verify.c`](../src/jwt_verify.c) ignores any libjwt status
+      bit other than `JWT_VALIDATION_EXPIRED` / `JWT_VALIDATION_TOO_NEW`
+      (intentional, since iss/aud are checked by hand). Add a one-line
+      comment so a future maintainer doesn't "fix" it into a regression.
+- [ ] **`clock_skew=+N` is silently accepted.** `parse_nonneg_int` in
+      [`src/config.c`](../src/config.c) accepts a leading `+`. Harmless but
+      undocumented. Decide and either document or reject.
+- [ ] **World-writable cert warning is double-gated behind `debug`.**
+      [`src/jwt_verify.c`](../src/jwt_verify.c) only checks/warns when
+      `cfg->debug` is set. This is a privilege-escalation precursor;
+      consider promoting to `LOG_ERR` (always emitted) per the project's
+      own security framing.
+- [ ] **`promote_mapped_user` comment.** [`src/pam_jwt.c`](../src/pam_jwt.c)
+      clears the slot via `pam_set_data(key, NULL, cleanup)`, which invokes
+      the old cleanup (freeing the buffer) before overwriting. The code is
+      correct; the comment could state this explicitly.
+
+### Low — style/consistency
+
+- [ ] **Dead variable `alg_name`.** [`src/jwt_verify.c`](../src/jwt_verify.c)
+      computes `jwt_alg_str(alg)` then discards it with `(void)alg_name;`.
+      Either log the alg name in the debug message (it's a public, non-secret
+      header value) or delete the dead code.
+- [ ] **Duplicated teardown in [`src/jwt_verify.c`](../src/jwt_verify.c).**
+      `jwt_free` / `memset` / `free(pubkey_pem)` is repeated ~6×. Collapse
+      to a single `goto cleanup` pattern.
+- [ ] **`prior_strings[5]` in [`src/config.c`](../src/config.c) hard-codes
+      the count.** Add a comment pinning it to the struct definition so a
+      new string field doesn't silently leak.
+- [ ] **[`README.md`](../README.md) status line is stale.** Still says
+      "Pre-release, scaffolding stage. No code has been written yet."
+      Update before tagging `v0.1.0`. Also the repo layout omits
+      `tests/test_util.c`, `tests/test.c`, `tests/test.h`.
