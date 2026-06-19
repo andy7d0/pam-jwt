@@ -66,11 +66,14 @@ run_privileged() {
 install_alpine() {
     require_cmd apk
 
+    # libjwt is VENDORED under vendor/libjwt/ and is built as part of
+    # `make`. We deliberately do NOT install the system libjwt-dev
+    # (Alpine 3.24 ships 3.x whose ABI/API breaks pam-jwt's verifier).
     local pkgs=(
         alpine-sdk      # gcc, make, libc-dev, etc.
         pkgconfig
         linux-pam-dev
-        libjwt-dev      # available in community; adjust if you build from source
+        jansson-dev     # runtime dep of the vendored libjwt 1.x
         openssl-dev
         openssl
         bash
@@ -81,7 +84,7 @@ install_alpine() {
 
     log "apk: installing ${pkgs[*]}"
     run_privileged apk add --no-interactive "${pkgs[@]}" \
-        || die "apk add failed; on Edge you may need 'libjwt-dev' from community (enable with 'apk add libjwt-dev --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community')"
+        || die "apk add failed"
 
     log "Alpine dependencies installed"
 }
@@ -97,12 +100,16 @@ install_debian() {
     # so pkg-config emits a warning unless libaudit-dev is present. The warning
     # is harmless for a shared-module build (we only need -lpam), but we install
     # libaudit-dev to keep `pkg-config --cflags pam` clean.
+    # libjwt is VENDORED under vendor/libjwt/ and is built as part of
+    # `make`. We deliberately do NOT install the system libjwt-dev
+    # even though Debian 13 / Ubuntu 24.04+ ship 1.x, because Alpine
+    # 3.24 ships 3.x and we want one build recipe for every distro.
     local pkgs=(
         build-essential
         pkg-config
         libpam0g-dev
         libaudit-dev
-        libjwt-dev     # Debian 12+ / Ubuntu 22.04+; otherwise build libjwt from source
+        libjansson-dev  # runtime dep of the vendored libjwt 1.x
         libssl-dev
         openssl
     )
@@ -113,7 +120,7 @@ install_debian() {
     log "apt: installing ${pkgs[*]}"
     # DEBIAN_FRONTEND=noninteractive avoids prompts on minimal images.
     DEBIAN_FRONTEND=noninteractive run_privileged apt-get install -y --no-install-recommends "${pkgs[@]}" \
-        || die "apt-get install failed; on older releases without 'libjwt-dev', build libjwt from https://github.com/benmcollins/libjwt and add to PKG_CONFIG_PATH"
+        || die "apt-get install failed"
 
     log "Debian/Ubuntu dependencies installed"
 }
@@ -171,7 +178,7 @@ main() {
         debian) install_debian ;;
     esac
 
-    log "verify with: pkg-config --modversion pam libjwt openssl"
+    log "verify with: pkg-config --modversion pam jansson openssl"
 }
 
 main "$@"

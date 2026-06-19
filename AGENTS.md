@@ -23,9 +23,32 @@ See [`plans/plan.md`](plans/plan.md) for the full design.
 
 - **Language:** C (C11)
 - **PAM:** Linux-PAM (`libpam`)
-- **JWT:** `libjwt` (benmcollins/libjwt) with the OpenSSL backend
+- **JWT:** **vendored** copy of [`libjwt` 1.17.2](https://github.com/benmcollins/libjwt) under `vendor/libjwt/`, built as a static archive and linked into `pam_jwt.so`. The system `libjwt-dev` package is NOT a build-time dependency -- see [Why vendor libjwt?](#why-vendor-libjwt) below.
+- **JSON:** system `jansson` (only runtime dep of the vendored libjwt 1.x)
 - **Crypto:** OpenSSL (`PEM_read_X509` → `X509_get_pubkey`)
-- **Build:** GNU `make` + `pkg-config` (libjwt, openssl, pam)
+- **Build:** GNU `make` + `pkg-config` (jansson, openssl, pam)
+
+### Why vendor libjwt?
+
+`pam-jwt` is a Linux-PAM module and must build and run on multiple
+distributions whose `libjwt` packages are not API-compatible:
+
+| Distro             | `libjwt-dev`          | Notes                                  |
+|--------------------|-----------------------|----------------------------------------|
+| Debian 13 (trixie) | 1.17.2 (1.x)          | ships 1.x                              |
+| Alpine 3.24        | 3.x                   | breaking ABI/API change vs. 1.x        |
+
+The verifier in `src/jwt_verify.c` and the test fixture
+`tests/fixtures/make_jwt.c` are written against the 1.x API. Rather
+than forking the build per distro or maintaining two parallel API
+shims, we **vendor libjwt 1.17.2** (the version the source code
+targets) and link it statically into `pam_jwt.so`. The build is then
+self-contained: every `.so` we ship embeds the same libjwt objects,
+compiled with the same flags, regardless of which `libjwt-dev` the
+host happens to ship.
+
+See `vendor/libjwt/README.md` for the full rationale, what is
+vendored, and how to upgrade.
 
 ## Repository layout
 
@@ -34,6 +57,7 @@ pam-jwt/
 ├── AGENTS.md            # this file
 ├── README.md
 ├── Makefile
+├── pam_jwt.map          # version script (release build)
 ├── .gitignore
 ├── include/pam_jwt.h    # public API
 ├── src/
@@ -41,12 +65,18 @@ pam-jwt/
 │   ├── config.c         # parse argc/argv -> struct pam_jwt_cfg
 │   ├── jwt_verify.c     # cert load, sig verify, claim + user checks
 │   └── util.c           # logging + helpers
+├── vendor/libjwt/       # vendored libjwt 1.17.2 -- see
+│                        # vendor/libjwt/README.md. Built as a static
+│                        # archive (build/vendor/libjwt.a) and linked
+│                        # into pam_jwt.so + test binaries. NOT a
+│                        # runtime dependency of installed binaries.
 ├── tests/
 │   ├── run_tests.c      # tiny custom test runner main
 │   ├── test_config.c
 │   ├── test_jwt_verify.c
 │   ├── test_claims.c
 │   ├── test_users.c
+│   ├── test_util.c
 │   ├── pam_harness.c    # integration: pam_start / pam_authenticate
 │   └── fixtures/
 │       ├── gen_certs.sh # openssl: RSA + EC key/cert

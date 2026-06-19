@@ -23,16 +23,38 @@ INSTALL_CONF_DIR := $(DESTDIR)$(PREFIX)/share/pam-jwt
 # Probe for `pam` first, fall back to `libpam`.
 PKG_PAM := $(shell if $(PKG_CONFIG) --exists pam; then echo pam; elif $(PKG_CONFIG) --exists libpam; then echo libpam; else echo pam; fi)
 
-PKGS   := $(PKG_PAM) libjwt openssl
+# libjwt is VENDORED under vendor/libjwt/ (see vendor/libjwt/README.md) and
+# is linked in as a static archive from $(VENDOR_LIB). The system libjwt
+# (whatever version the host happens to ship -- 1.x on Debian, 3.x on
+# Alpine 3.24) is intentionally NOT a build-time dependency. jansson is a
+# runtime dep of the vendored libjwt 1.x and stays a system library.
+PKGS   := $(PKG_PAM) jansson openssl
 PKG_CFLAGS  := $(shell $(PKG_CONFIG) --cflags $(PKGS))
 PKG_LDLIBS  := $(shell $(PKG_CONFIG) --libs   $(PKGS))
 
 # --- Compile / link flags ----------------------------------------------------
 
+# pam-jwt's own sources: strict. -Werror is non-negotiable per AGENTS.md
+# so a future maintainer never ships a tree that builds with warnings.
 WARNINGS  := -Wall -Wextra -Werror
 COMMON_CFLAGS := -std=c11 -fPIC -fvisibility=hidden \
                  -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L \
-                 $(WARNINGS) $(PKG_CFLAGS) -Iinclude
+                 $(WARNINGS) $(PKG_CFLAGS) \
+                 -Iinclude -Ivendor/libjwt/include
+
+# Vendored libjwt 1.17.2: relaxed. We did not write this code and do
+# not want to fork it on every new compiler release, so we keep -Wall
+# (so genuine issues still surface) but drop -Wextra and -Werror. This
+# matches the upstream build's default (autotools only enables -Werror
+# when --enable-werror is passed at configure time). The vendored
+# config.h / API surface we depend on is exercised by the test suite,
+# so regressions in libjwt itself are still caught at `make test` /
+# `make test-asan` time.
+VENDOR_WARNINGS := -Wall
+VENDOR_CFLAGS  := -std=c11 -fPIC -fvisibility=default \
+                  -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L \
+                  $(VENDOR_WARNINGS) $(PKG_CFLAGS) \
+                  -Ivendor/libjwt/include -Ivendor/libjwt/src
 
 # Release build flags. Used only by the `make release` target. The debug
 # build path (the default `all` target) is unaffected.
@@ -91,10 +113,22 @@ INCDIR      := include
 BUILDDIR    := build
 TESTDIR     := tests
 FIXDIR      := $(TESTDIR)/fixtures
+VENDORDIR   := vendor/libjwt
 
 LIB_SRCS    := $(wildcard $(SRCDIR)/*.c)
 LIB_OBJS    := $(patsubst $(SRCDIR)/%.c,$(BUILDDIR)/%.o,$(LIB_SRCS))
 LIB_SO      := $(BUILDDIR)/pam_jwt.so
+
+# Vendored libjwt 1.17.2 sources (see vendor/libjwt/README.md). Compiled
+# into a static archive and linked into both pam_jwt.so and the test
+# binaries so the build does not depend on whatever libjwt-dev the host
+# happens to ship. We deliberately exclude jwt-gnutls.c and jwt-wincrypt.c
+# (neither backend is supported by pam-jwt -- we use OpenSSL only).
+VENDOR_SRCS := $(VENDORDIR)/src/base64.c \
+               $(VENDORDIR)/src/jwt.c \
+               $(VENDORDIR)/src/jwt-openssl.c
+VENDOR_OBJS := $(patsubst $(VENDORDIR)/src/%.c,$(BUILDDIR)/vendor/%.o,$(VENDOR_SRCS))
+VENDOR_LIB  := $(BUILDDIR)/vendor/libjwt.a
 
 EXAMPLE_CONF := examples/pam-jwt.conf
 
@@ -105,13 +139,42 @@ EXAMPLE_CONF := examples/pam-jwt.conf
 
 all: $(LIB_SO)
 
-$(LIB_SO): $(LIB_OBJS) | $(BUILDDIR)
-	$(CC) -shared -Wl,-soname,pam_jwt.so -o $@ $(LIB_OBJS) $(PKG_LDLIBS)
+# $(LIB_SO) depends on the vendored libjwt static archive so the
+# jwt_verify.c / pam_jwt.c calls into libjwt are satisfied at link
+# time. The static archive is built below.
+$(LIB_SO): $(LIB_OBJS) $(VENDOR_LIB) | $(BUILDDIR)
+	$(CC) -shared -Wl,-soname,pam_jwt.so -o $@ \
+	    -Wl,--whole-archive $(VENDOR_LIB) -Wl,--no-whole-archive \
+	    $(LIB_OBJS) $(PKG_LDLIBS)
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.c | $(BUILDDIR)
 	$(CC) $(COMMON_CFLAGS) -c $< -o $@
 
 $(BUILDDIR):
+	@mkdir -p $@
+
+# --- Vendored libjwt (static) -----------------------------------------------
+
+# Compile each vendored libjwt source into a position-independent object.
+# The vendored library has its own private headers in vendor/libjwt/src/
+# (config.h, base64.h, jwt-private.h), so the include path needs to point
+# there in addition to the public include/. We deliberately do NOT pass
+# -fvisibility=hidden here: libjwt symbols must remain visible inside
+# the .a so the linker can resolve them when they are pulled in by
+# pam_jwt.c / jwt_verify.c / make_jwt.c. The flags come from
+# $(VENDOR_CFLAGS) (relaxed warnings; see comment above) so the
+# upstream libjwt code does not need to be patched to compile cleanly
+# under -Wextra / -Werror.
+$(BUILDDIR)/vendor/%.o: $(VENDORDIR)/src/%.c | $(BUILDDIR)/vendor
+	$(CC) $(VENDOR_CFLAGS) -c $< -o $@
+
+# Pack the vendored objects into a static archive. `ar rcs` creates the
+# archive if needed and adds an index so the linker can pull only the
+# objects it actually references.
+$(VENDOR_LIB): $(VENDOR_OBJS) | $(BUILDDIR)/vendor
+	$(AR) rcs $@ $(VENDOR_OBJS)
+
+$(BUILDDIR)/vendor:
 	@mkdir -p $@
 
 # --- Tests -------------------------------------------------------------------
@@ -120,13 +183,21 @@ TEST_BIN := $(BUILDDIR)/run_tests
 TEST_SRCS := $(wildcard $(TESTDIR)/*.c)
 TEST_OBJS := $(patsubst $(TESTDIR)/%.c,$(BUILDDIR)/tests/%.o,$(TEST_SRCS))
 # Pull in the library object files so test binaries can call e.g.
-# pam_jwt_cfg_parse() without the full .so being loaded.
-TEST_LIB_OBJS := $(LIB_OBJS)
+# pam_jwt_cfg_parse() without the full .so being loaded. The vendored
+# libjwt archive is also linked in so jwt_verify.c calls into libjwt
+# resolve.
+TEST_LIB_OBJS := $(LIB_OBJS) $(VENDOR_LIB)
 TEST_CFLAGS := $(COMMON_CFLAGS) -Itests
 TEST_LDLIBS := $(PKG_LDLIBS) -ldl
 
+# Whole-archive is needed so symbols from libjwt that pam_jwt.c / the
+# tests don't directly reference are still pulled out of the .a (some
+# libjwt entry points are reached indirectly through function pointers
+# or the headers-only references in jwt-private.h).
 $(TEST_BIN): $(TEST_OBJS) $(TEST_LIB_OBJS) | $(BUILDDIR)/tests
-	$(CC) -o $@ $(TEST_OBJS) $(TEST_LIB_OBJS) $(TEST_LDLIBS)
+	$(CC) -o $@ \
+	    -Wl,--whole-archive $(VENDOR_LIB) -Wl,--no-whole-archive \
+	    $(TEST_OBJS) $(LIB_OBJS) $(TEST_LDLIBS)
 
 # Per-file CFLAGS additions. test_jwt_verify.c mints tokens by exec'ing
 # tests/fixtures/make_jwt and reading tests/fixtures/*.pem/*.key, so it
@@ -166,8 +237,10 @@ test check: $(TEST_BIN)
 	fi
 	@$(TEST_BIN)
 
-$(FIXDIR)/make_jwt: $(FIXDIR)/make_jwt.c | $(BUILDDIR)
-	$(CC) $(COMMON_CFLAGS) -I$(FIXDIR) -o $@ $< $(PKG_LDLIBS)
+$(FIXDIR)/make_jwt: $(FIXDIR)/make_jwt.c $(VENDOR_LIB) | $(BUILDDIR)
+	$(CC) $(COMMON_CFLAGS) -I$(FIXDIR) -o $@ $< \
+	    -Wl,--whole-archive $(VENDOR_LIB) -Wl,--no-whole-archive \
+	    $(PKG_LDLIBS)
 
 # `make test-asan` rebuilds the test binary with AddressSanitizer +
 # UndefinedBehaviorSanitizer enabled. LeakSanitizer (bundled with
@@ -194,9 +267,20 @@ ASAN_LIB_OBJS := \
     $(ASAN_BUILDDIR)/jwt_verify.o \
     $(ASAN_BUILDDIR)/util.o
 
+# Vendored libjwt objects compiled with ASan instrumentation. Built
+# inline below (no separate archive) so the .o files are guaranteed to
+# carry the sanitizer instrumentation the rest of the test binary
+# carries -- a separately-built libjwt.a would not be instrumented and
+# would hide leaks / UAF behind a sanitizer-invisible wall.
+ASAN_VENDOR_OBJS := \
+    $(ASAN_BUILDDIR)/vendor/base64.o \
+    $(ASAN_BUILDDIR)/vendor/jwt.o \
+    $(ASAN_BUILDDIR)/vendor/jwt-openssl.o
+
 ASAN_SO_OBJS := \
     $(ASAN_LIB_OBJS) \
-    $(ASAN_BUILDDIR)/pam_jwt.o
+    $(ASAN_BUILDDIR)/pam_jwt.o \
+    $(ASAN_VENDOR_OBJS)
 
 ASAN_TEST_OBJS := \
     $(ASAN_BUILDDIR)/tests/run_tests.o \
@@ -211,7 +295,7 @@ ASAN_TEST_OBJS := \
 test-asan:
 	@echo "== building with ASan + UBSan =="
 	@$(MAKE) --no-print-directory clean
-	@mkdir -p $(ASAN_BUILDDIR)/tests $(BUILDDIR)
+	@mkdir -p $(ASAN_BUILDDIR)/tests $(ASAN_BUILDDIR)/vendor $(BUILDDIR)
 	@for f in $(SRCDIR)/*.c; do \
 	    $(CC) $(COMMON_CFLAGS) $(ASAN_FLAGS) -c $$f -o $(ASAN_BUILDDIR)/$$(basename $$f .c).o; \
 	done
@@ -220,8 +304,18 @@ test-asan:
 	        -DFIX_DIR='"$(FIXDIR)"' -DMAKE_JWT='"$(FIXDIR)/make_jwt"' \
 	        -c $$f -o $(ASAN_BUILDDIR)/tests/$$(basename $$f .c).o; \
 	done
+	# Vendored libjwt, compiled with the same sanitizer instrumentation
+	# as the rest of the binary. Putting these in a separate archive
+	# would silently hide leaks / UAF in libjwt code from the sanitizer.
+	# We use VENDOR_CFLAGS (relaxed warnings) + ASAN_FLAGS (sanitizers),
+	# so sanitizer coverage on the vendored code stays maximal even
+	# though we don't own the source.
+	@for f in $(VENDOR_SRCS); do \
+	    $(CC) $(VENDOR_CFLAGS) $(ASAN_FLAGS) \
+	        -c $$f -o $(ASAN_BUILDDIR)/vendor/$$(basename $$f .c).o; \
+	done
 	@$(CC) -o $(ASAN_BUILDDIR)/run_tests \
-	    $(ASAN_TEST_OBJS) $(ASAN_LIB_OBJS) \
+	    $(ASAN_TEST_OBJS) $(ASAN_LIB_OBJS) $(ASAN_VENDOR_OBJS) \
 	    $(PKG_LDLIBS) $(ASAN_LDLIBS) -ldl
 	# The pam_harness integration tests dlopen() pam_jwt.so via libpam,
 	# so we must also build the .so (with ASan instrumentation baked in)
@@ -258,13 +352,21 @@ test-asan:
 # Override the toolchain if you need to: `make release CC=clang`.
 RELEASE_BUILDDIR := $(BUILDDIR)/release
 RELEASE_OBJS    := $(patsubst $(SRCDIR)/%.c,$(RELEASE_BUILDDIR)/%.o,$(LIB_SRCS))
+# Vendored libjwt objects built with the same release flags as the
+# pam-jwt sources. Linked in whole-archive below so LTO can inline
+# libjwt functions into pam_jwt.so and the version script still hides
+# everything but the pam_sm_* entry points.
+RELEASE_VENDOR_OBJS := \
+    $(RELEASE_BUILDDIR)/vendor/base64.o \
+    $(RELEASE_BUILDDIR)/vendor/jwt.o \
+    $(RELEASE_BUILDDIR)/vendor/jwt-openssl.o
 RELEASE_SO      := $(RELEASE_BUILDDIR)/pam_jwt.so
 
 # The release build needs its own pam_jwt.so entry in the .gitignore
 # so accidental `git status` noise stays out.
 .PHONY: release-tree
 release-tree:
-	@mkdir -p $(RELEASE_BUILDDIR)
+	@mkdir -p $(RELEASE_BUILDDIR) $(RELEASE_BUILDDIR)/vendor
 
 # Release .o files need LTO-aware CFLAGS + a -DPAM_JWT_VERSION define
 # baked in. We deliberately drop -g from the embedded debug info so
@@ -274,13 +376,27 @@ $(RELEASE_BUILDDIR)/%.o: $(SRCDIR)/%.c | release-tree
 	$(CC) $(RELEASE_CFLAGS) -DPAM_JWT_VERSION='"$(PAM_JWT_VERSION)"' \
 	      -c $< -o $@
 
+# Vendored libjwt, compiled with the release flags but with relaxed
+# warnings (we did not write the upstream code; do not let its
+# -Wsign-compare / -Wpointer-sign issues gate pam-jwt's release
+# build). Mirrors the non-release build's -fvisibility=default so
+# libjwt symbols are visible to the linker during whole-archive
+# inclusion, then become hidden again at the .so boundary via the
+# version script.
+$(RELEASE_BUILDDIR)/vendor/%.o: $(VENDORDIR)/src/%.c | release-tree
+	$(CC) $(RELEASE_CFLAGS) -fvisibility=default -I$(VENDORDIR)/src \
+	      -DPAM_JWT_VERSION='"$(PAM_JWT_VERSION)"' \
+	      -Wno-error -Wno-sign-compare -Wno-pointer-sign \
+	      -c $< -o $@
+
 # Link the release .so. -flto requires LTO on the link command too,
 # so the per-object LTO bitcode is merged at link time. The version
 # script restricts the dynamic symbol table to the pam_sm_* entries
 # that Linux-PAM looks up at module load.
-$(RELEASE_SO): $(RELEASE_OBJS) $(VERSION_SCRIPT) | release-tree
+$(RELEASE_SO): $(RELEASE_OBJS) $(RELEASE_VENDOR_OBJS) $(VERSION_SCRIPT) | release-tree
 	$(CC) -shared -Wl,-soname,pam_jwt.so -flto \
 	      $(RELEASE_LDFLAGS) \
+	      -Wl,--whole-archive $(RELEASE_VENDOR_OBJS) -Wl,--no-whole-archive \
 	      -o $@ $(RELEASE_OBJS) $(PKG_LDLIBS)
 
 # Strip debug sections in-place. We keep .dynsym / .dynstr so the
