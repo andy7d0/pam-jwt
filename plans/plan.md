@@ -205,7 +205,7 @@ the [`Makefile`](../Makefile), and the docs. Ordered by priority.
       [`tests/test_claims.c`](../tests/test_claims.c) (`aud array:` group),
       all green under `make clean && make && make test` and
       `make test-asan`.
-- [ ] **Return-code table in [`docs/config.md`](../docs/config.md) is wrong
+- [x] **Return-code table in [`docs/config.md`](../docs/config.md) is wrong
       vs. code.**
       - `PAM_AUTHTOK_ERR` is listed but [`src/pam_jwt.c`](../src/pam_jwt.c)
         returns `PAM_AUTH_ERR` when `pam_get_authtok` fails or the token is
@@ -214,6 +214,18 @@ the [`Makefile`](../Makefile), and the docs. Ordered by priority.
         user" only; it is also returned by [`src/jwt_verify.c`](../src/jwt_verify.c)
         when `match_field` does not equal the requested user — absent from
         the docs.
+      Resolved: the table in [`docs/config.md`](../docs/config.md) now
+      lists only the codes `pam_sm_authenticate()` actually returns
+      (`PAM_SUCCESS`, `PAM_AUTH_ERR`, `PAM_USER_UNKNOWN`,
+      `PAM_SERVICE_ERR`, `PAM_BUF_ERR`), with a `Returned by` column
+      pinpointing which file (`src/pam_jwt.c` vs `src/jwt_verify.c`)
+      emits each one. The omitted `PAM_AUTHTOK_ERR` is called out in a
+      note explaining that the code path collapses to `PAM_AUTH_ERR`,
+      and the `match_field` mismatch path is listed under
+      `PAM_USER_UNKNOWN`. The return values of the other entry points
+      (`pam_sm_setcred`, `pam_sm_acct_mgmt`,
+      `pam_sm_open_session`/`close_session`, `pam_sm_chauthtok`) are
+      documented separately below the table.
 - [ ] **`map_field` empty-value rejection is documented but not enforced.**
       [`docs/config.md`](../docs/config.md) states the mapped claim must be
       non-empty. The mapping path in [`src/jwt_verify.c`](../src/jwt_verify.c)

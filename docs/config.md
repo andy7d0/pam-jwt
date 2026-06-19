@@ -129,16 +129,35 @@ key, `ES*` against an RSA key, or unknown strings — causes
 
 ## Return codes
 
-`pam_sm_authenticate()` uses the standard PAM result codes:
+`pam_sm_authenticate()` ([`src/pam_jwt.c`](../src/pam_jwt.c)) uses the
+standard PAM result codes. The verifier ([`src/jwt_verify.c`](../src/jwt_verify.c))
+returns its own codes for token-level failures; `pam_sm_authenticate()`
+propagates them unchanged, except where noted.
 
-| Code | Meaning |
-|---|---|
-| `PAM_SUCCESS` | The JWT verified, all configured claim / user checks passed. |
-| `PAM_AUTH_ERR` | The JWT is missing, malformed, has an invalid signature, an unsupported or mismatched `alg`, an untrusted issuer / audience, an expired / not-yet-valid timestamp (within `clock_skew`), a failed `match_field` check, or any other verification failure. |
-| `PAM_USER_UNKNOWN` | `pam_get_user()` returned no user. |
-| `PAM_AUTHTOK_ERR` | `pam_get_authtok()` failed to retrieve the token. |
-| `PAM_SERVICE_ERR` | Module arguments could not be parsed, the cert file is missing or unreadable, or another internal error occurred. |
-| `PAM_BUF_ERR` | Memory allocation failure. |
+| Code | Returned by | Meaning |
+|---|---|---|
+| `PAM_SUCCESS` | `pam_sm_authenticate` | The JWT verified, all configured claim / user checks passed. The optional mapped user (if `map_field` is set) has been stashed for `pam_sm_setcred` to promote to `PAM_USER`. |
+| `PAM_AUTH_ERR` | `pam_sm_authenticate`, `pam_jwt_verify` | The authtok could not be retrieved from the PAM conversation, the token is empty, the token is malformed, the signature is invalid, the JWT `alg` is outside `{RS256, ES256}` or does not match the certificate key type, the time-based claims (`exp` / `nbf`) fall outside the `clock_skew` window, the `iss` claim does not match the configured `issuer`, the `aud` claim does not contain the configured `audience`, or the `map_field` claim is missing / non-string in the token. |
+| `PAM_USER_UNKNOWN` | `pam_sm_authenticate`, `pam_jwt_verify` | `pam_get_user()` returned no user (or an empty string), **or** the `match_field` claim does not equal the user that initiated authentication. |
+| `PAM_SERVICE_ERR` | `pam_sm_authenticate`, `pam_jwt_verify` | Module arguments could not be parsed (`cert_file` missing, malformed value, duplicate, OOM during parse, ...), the cert file is missing or unreadable, the cert file is not a valid X.509 PEM, or another internal error occurred (e.g. an unexpected `NULL` argument reaching the verifier). |
+| `PAM_BUF_ERR` | `pam_sm_authenticate`, `pam_jwt_verify` | Memory allocation failure (e.g. cloning the mapped-user claim, or stashing it via `pam_set_data()`). |
+
+> Note: `PAM_AUTHTOK_ERR` is **not** used. When `pam_get_authtok()`
+> fails or returns an empty token, [`src/pam_jwt.c`](../src/pam_jwt.c)
+> returns `PAM_AUTH_ERR` so the caller observes a uniform
+> authentication failure rather than a transport-level authtok error.
+
+The other PAM entry points in [`src/pam_jwt.c`](../src/pam_jwt.c)
+return:
+
+- `pam_sm_setcred()` → `PAM_SUCCESS` (promotes the optional mapped user
+  to `PAM_USER` on `PAM_ESTABLISH_CRED` / `PAM_REINITIALIZE_CRED`,
+  no-op otherwise).
+- `pam_sm_acct_mgmt()`, `pam_sm_open_session()`,
+  `pam_sm_close_session()` → `PAM_SUCCESS` (pam_jwt does not
+  participate in account / session management).
+- `pam_sm_chauthtok()` → `PAM_IGNORE` (the credential is a JWT, not a
+  Unix password; there is nothing for this module to change).
 
 The module never logs the token, the authtok, or any private key
 material. Operational failures (bad cert file, alg mismatch, etc.)
