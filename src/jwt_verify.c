@@ -12,8 +12,12 @@
  *   - Validate time-based claims (exp, nbf) with the configured clock_skew.
  *   - Optionally enforce iss / aud equality with the configured values.
  *   - Optionally map the PAM user from a configurable claim
- *     (cfg->map_field) and/or require a configurable claim to equal the
- *     requested user (cfg->match_field).
+ *     (cfg->map_field). Username BINDING is always required: the
+ *     verifier reads the claim named by cfg->match_field and, when no
+ *     match_field is configured, falls back to the JWT standard "sub"
+ *     claim; either way the bound claim must equal the requested user.
+ *     A token without a usable bound claim is rejected with
+ *     PAM_USER_UNKNOWN.
  *
  * Security rules enforced here (from AGENTS.md):
  *   - alg=none and any algorithm outside {RS256, ES256} is rejected.
@@ -559,19 +563,42 @@ int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
         goto cleanup;
     }
 
-    /* Optional username binding: required claim must equal requested_user.
-     * Done before mapping so a misconfigured deployment fails closed
-     * with PAM_USER_UNKNOWN rather than silently substituting the user. */
+    /* Username binding is ALWAYS enforced. The PAM module's job is to
+     * decide whether this token is allowed to authenticate this user;
+     * "verify the signature and call it a day" is not an option.
+     *
+     *   - When cfg->match_field is set, the verifier reads that claim
+     *     and requires it to equal requested_user. This is the explicit,
+     *     operator-configured binding.
+     *   - When cfg->match_field is unset, the verifier falls back to
+     *     the JWT's standard "sub" claim and requires it to equal
+     *     requested_user. RFC 7519 reserves "sub" for the subject of
+     *     the token (the entity the IdP is identifying), so it is the
+     *     right implicit binding for any deployment that doesn't pin
+     *     a custom claim.
+     *
+     * In both branches the binding is checked BEFORE mapping so a
+     * misconfigured deployment fails closed with PAM_USER_UNKNOWN
+     * rather than silently substituting the user. A token that omits
+     * the bound claim, or carries it as the empty string, is treated
+     * the same as a mismatch and rejected with PAM_USER_UNKNOWN --
+     * the empty-string path prevents a buggy IdP that wipes the claim
+     * from accidentally matching every requested user. */
+    const char *bound_claim = NULL;
     if (cfg->match_field != NULL)
     {
-        const char *claim = jwt_get_grant(jwt, cfg->match_field);
-        if (!str_eq(claim, requested_user))
-        {
-            pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
-                        "pam_jwt: match_field claim does not equal user");
-            ret = PAM_USER_UNKNOWN;
-            goto cleanup;
-        }
+        bound_claim = jwt_get_grant(jwt, cfg->match_field);
+    }
+    else
+    {
+        bound_claim = jwt_get_grant(jwt, "sub");
+    }
+    if (!str_eq(bound_claim, requested_user))
+    {
+        pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
+                    "pam_jwt: binding claim does not equal requested user");
+        ret = PAM_USER_UNKNOWN;
+        goto cleanup;
     }
 
     /* Optional username mapping: hand the caller a malloc'd copy of the

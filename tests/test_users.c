@@ -9,19 +9,25 @@
  *   - map_field: empty claim value in token -> AUTH_ERR (or fallback_user)
  *   - fallback_user: substitutes for a missing/empty map_field claim
  *   - fallback_user: ignored when map_field claim is present and non-empty
- *   - fallback_user: does NOT participate in match_field binding
+ *   - fallback_user: does NOT participate in the binding check
  *   - match_field: equal to requested user -> success
  *   - match_field: mismatch -> PAM_USER_UNKNOWN
  *   - match_field: empty claim value in token -> USER_UNKNOWN (binding fails)
- *   - both off: verification succeeds with no mapping
  *   - both on, consistent: success, mapped user populated
  *   - both on, inconsistent: PAM_USER_UNKNOWN (binding fires first)
- *   - map_field with no match_field: ignore requested user
- *   - match_field with no map_field: requested user enforced, no output
+ *   - map_field with match_field (sub-fallback): both checks pass when
+ *     the bound claim and the map claim line up
  *
- * The verifier handles the order: match_field is checked BEFORE map_field
- * so a misconfigured deployment fails closed with PAM_USER_UNKNOWN
- * rather than silently substituting the user.
+ * Username BINDING is always required. The bound claim is selected as
+ *   - match_field, when configured; otherwise
+ *   - the JWT standard "sub" claim.
+ * The dedicated sub-fallback matrix (match, mismatch, empty, missing)
+ * lives in this file too, so the implicit-binding guarantee gets the
+ * same coverage as the explicit match_field path.
+ *
+ * The verifier handles the order: binding (match_field or sub) is
+ * checked BEFORE mapping so a misconfigured deployment fails closed
+ * with PAM_USER_UNKNOWN rather than silently substituting the user.
  */
 
 #include "test.h"
@@ -178,13 +184,20 @@ static struct pam_jwt_cfg make_cfg(const char *cert)
 
 TEST_GROUP(users)
 {
-    /* --- map_field only --------------------------------------------------- */
-
+    /* --- map_field only --------------------------------------------------- *
+     *
+     * All map_field-only tests below carry a token whose `sub` matches
+     * the requested user so the always-on binding step passes; the
+     * tests then focus on the mapping step. The string "ignored" is
+     * used as a sentinel requested user purely to flag "this test is
+     * not exercising the binding step": a token with --sub=ignored
+     * satisfies the binding without coupling the test to a real Unix
+     * account name. */
     TEST("map_field: claim present -> mapped user populated")
     {
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
-                               "--sub", "internal-id",
+                               "--sub", "ignored",
                                "--claim", "preferred_username=alice", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -203,7 +216,8 @@ TEST_GROUP(users)
     {
         ensure_path();
         /* Token has no "preferred_username" claim. */
-        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "ignored", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
         cfg.map_field = pam_jwt_strdup("preferred_username");
@@ -225,6 +239,7 @@ TEST_GROUP(users)
          * surface an empty username to setcred. */
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "ignored",
                                "--claim", "preferred_username=", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -273,7 +288,7 @@ TEST_GROUP(users)
          * mapped name anywhere. */
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
-                               "--sub", "internal-id",
+                               "--sub", "ignored",
                                "--claim", "preferred_username=alice", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -284,13 +299,16 @@ TEST_GROUP(users)
         free(tok);
     }
 
-    TEST("map_field: requested user is ignored")
+    TEST("map_field: requested user is bound via sub, mapped value is separate")
     {
-        /* map_field does not constrain `requested_user`; it only
-         * reads a claim and hands it back. The application is then
-         * free to compare the mapped name against the local user db. */
+        /* With match_field unset the verifier binds the requested user
+         * against the JWT `sub` claim. map_field is independent: it
+         * reads a different claim and hands it back to the caller.
+         * The application is free to use the mapped name for whatever
+         * purpose it wants; the binding check is not bypassed. */
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "bob",
                                "--claim", "preferred_username=alice", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -369,17 +387,43 @@ TEST_GROUP(users)
         free(tok);
     }
 
-    /* --- both off --------------------------------------------------------- */
+    /* --- both off --------------------------------------------------------- *
+     *
+     * With both map_field and match_field unset, the binding step
+     * still fires against the JWT `sub` claim (always-on binding).
+     * These cases pin the contract: a token with a matching `sub`
+     * succeeds with no mapping, and a token missing `sub` is
+     * rejected with PAM_USER_UNKNOWN. */
 
-    TEST("both off: success, no mapping output")
+    TEST("both off + matching sub: success, no mapping output")
     {
         ensure_path();
-        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "alice", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
         char *mapped = (char *)0xdeadbeef;
         ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "alice", &mapped),
                       PAM_SUCCESS);
+        ASSERT_TRUE(mapped == NULL);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("both off + no sub claim: USER_UNKNOWN")
+    {
+        ensure_path();
+        /* No --sub flag -> the token has no `sub` claim. Without
+         * match_field the verifier falls back to `sub`, finds it
+         * missing, and rejects the request with PAM_USER_UNKNOWN.
+         * The old "both off is fine" behaviour is no longer
+         * supported: user matching is always required. */
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        char *mapped = (char *)0xdeadbeef;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "alice", &mapped),
+                      PAM_USER_UNKNOWN);
         ASSERT_TRUE(mapped == NULL);
         pam_jwt_cfg_free(&cfg);
         free(tok);
@@ -488,8 +532,11 @@ TEST_GROUP(users)
         ensure_path();
         /* Token has no "preferred_username" claim at all. Without
          * fallback_user this would fail with PAM_AUTH_ERR; with it,
-         * the verifier substitutes the configured string and succeeds. */
-        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+         * the verifier substitutes the configured string and succeeds.
+         * The token still carries a `sub` so the always-on binding
+         * step passes. */
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "ignored", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
         cfg.map_field = pam_jwt_strdup("preferred_username");
@@ -511,6 +558,7 @@ TEST_GROUP(users)
          * Without fallback_user this would fail with PAM_AUTH_ERR; with
          * it, the verifier substitutes the configured string. */
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "ignored",
                                "--claim", "preferred_username=", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -533,6 +581,7 @@ TEST_GROUP(users)
          * use it -- fallback_user is only consulted when the claim is
          * absent or empty. */
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "ignored",
                                "--claim", "preferred_username=alice", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -552,9 +601,11 @@ TEST_GROUP(users)
     {
         /* Sanity check: with map_field off, fallback_user is dead
          * config -- the verifier never consults it, never sets a
-         * mapped user, and the token still verifies. */
+         * mapped user, and the token still verifies (provided the
+         * sub-fallback binding passes). */
         ensure_path();
-        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "alice", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
         cfg.fallback_user = pam_jwt_strdup("service-acct");
@@ -608,6 +659,123 @@ TEST_GROUP(users)
         cfg.match_field = pam_jwt_strdup("username");
         char *mapped = (char *)0xdeadbeef;
         ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "bob", &mapped),
+                      PAM_USER_UNKNOWN);
+        ASSERT_TRUE(mapped == NULL);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    /* --- implicit sub-fallback binding -----------------------------------
+     *
+     * Username binding is ALWAYS enforced. When match_field is unset
+     * the verifier falls back to the JWT standard `sub` claim (RFC
+     * 7519) and requires it to equal the requested user. The cases
+     * below pin the contract for the implicit binding path: success
+     * on match, USER_UNKNOWN on mismatch / empty / missing.
+     */
+
+    TEST("sub-fallback binding: matching sub -> success, no mapping")
+    {
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "alice", NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        char *mapped = (char *)0xdeadbeef;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "alice", &mapped),
+                      PAM_SUCCESS);
+        ASSERT_TRUE(mapped == NULL);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("sub-fallback binding: sub mismatch -> USER_UNKNOWN")
+    {
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "alice", NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        char *mapped = (char *)0xdeadbeef;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "bob", &mapped),
+                      PAM_USER_UNKNOWN);
+        ASSERT_TRUE(mapped == NULL);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("sub-fallback binding: empty sub claim -> USER_UNKNOWN")
+    {
+        /* An empty `sub` claim is well-formed JSON but must NOT be
+         * treated as a wildcard. A buggy IdP that wipes `sub` must
+         * not accidentally match every requested user. */
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "", NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        char *mapped = (char *)0xdeadbeef;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "alice", &mapped),
+                      PAM_USER_UNKNOWN);
+        ASSERT_TRUE(mapped == NULL);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("sub-fallback binding: missing sub claim -> USER_UNKNOWN")
+    {
+        /* No --sub flag at all. The verifier must reach for `sub`
+         * and reject when it is absent. */
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        char *mapped = (char *)0xdeadbeef;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "alice", &mapped),
+                      PAM_USER_UNKNOWN);
+        ASSERT_TRUE(mapped == NULL);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("sub-fallback binding: with map_field, sub still binds")
+    {
+        /* map_field is independent from binding. The bound claim
+         * (sub, in this case) must equal the requested user AND
+         * the mapped claim (preferred_username) is handed back to
+         * the caller. Here the binding passes; mapping populates
+         * *out_mapped_user with the mapped claim. */
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "id-1234",
+                               "--claim", "preferred_username=alice", NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.map_field = pam_jwt_strdup("preferred_username");
+        char *mapped = NULL;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "id-1234", &mapped),
+                      PAM_SUCCESS);
+        ASSERT_TRUE(mapped != NULL);
+        ASSERT_STR_EQ(mapped, "alice");
+        free(mapped);
+        pam_jwt_cfg_free(&cfg);
+        free(tok);
+    }
+
+    TEST("sub-fallback binding: with map_field, sub mismatch rejects")
+    {
+        /* As above but the requested user does not equal `sub`.
+         * The verifier must fail closed with PAM_USER_UNKNOWN and
+         * NOT leak the mapped claim to the caller. */
+        ensure_path();
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "id-1234",
+                               "--claim", "preferred_username=alice", NULL);
+        ASSERT_TRUE(tok != NULL);
+        struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
+        cfg.map_field = pam_jwt_strdup("preferred_username");
+        char *mapped = (char *)0xdeadbeef;
+        ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "evil", &mapped),
                       PAM_USER_UNKNOWN);
         ASSERT_TRUE(mapped == NULL);
         pam_jwt_cfg_free(&cfg);

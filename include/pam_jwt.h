@@ -193,7 +193,8 @@ extern "C"
 
     /* Verify a JWT `token` (NUL-terminated) against the configuration `cfg`,
      * loading the issuer certificate from `cfg->cert_file` and applying the
-     * optional issuer / audience / username mapping / binding rules.
+     * optional issuer / audience / username mapping rules plus the always-
+     * enforced username binding rule.
      *
      * `pamh` is forwarded to pam_syslog for diagnostic messages and may be
      * NULL. `requested_user` is the PAM user that initiated authentication
@@ -203,21 +204,38 @@ extern "C"
      * value. The caller owns it and must release it with free(). When
      * map_field is not configured the field is set to NULL.
      *
+     * Username BINDING is always required -- there is no "verify the
+     * signature and call it a day" mode. The bound claim is selected as
+     * follows:
+     *
+     *   - When cfg->match_field is set, the verifier reads that claim and
+     *     requires it to equal `requested_user`. The claim must be present
+     *     and non-empty.
+     *   - When cfg->match_field is unset, the verifier falls back to the
+     *     JWT standard "sub" claim (RFC 7519) and requires it to equal
+     *     `requested_user`. The claim must be present and non-empty.
+     *
+     * In both cases a missing or empty bound claim, or one that does not
+     * equal `requested_user`, is rejected with PAM_USER_UNKNOWN. Binding
+     * is checked BEFORE mapping so a misconfigured deployment fails closed
+     * rather than silently substituting the user.
+     *
      * If cfg->map_field is configured AND cfg->fallback_user is configured
      * AND the token does not carry a usable mapped claim (missing, non-
      * string, or empty), *out_mapped_user is populated with a freshly
      * malloc'd copy of cfg->fallback_user instead of the verifier failing.
      * In that case the mapped-user check is still satisfied (PAM_SUCCESS),
-     * but binding via cfg->match_field continues to compare the requested
-     * user against the corresponding claim value -- the fallback does NOT
-     * participate in the match_field check.
+     * but binding via the rule above (match_field or sub) continues to
+     * compare the requested user against the corresponding claim value --
+     * the fallback does NOT participate in the binding check.
      *
      * Return codes follow the Linux-PAM convention:
      *   - PAM_SUCCESS (0): authentication succeeds
      *   - PAM_AUTH_ERR: signature invalid, alg rejected, claim mismatch,
      *                   expired/not-yet-valid, malformed token, ...
-     *   - PAM_USER_UNKNOWN: match_field configured and the claim does not
-     *                      equal requested_user
+     *   - PAM_USER_UNKNOWN: the bound claim (match_field, or "sub" as a
+     *                      fallback) is missing, empty, or does not equal
+     *                      `requested_user`
      *   - PAM_SERVICE_ERR: configuration error (missing cert_file), cert
      *                     load failure, OOM
      *   - PAM_BUF_ERR: memory allocation failure inside libjwt

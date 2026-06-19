@@ -8,9 +8,14 @@ Guidance for AI coding agents (and humans) working on `pam-jwt`.
 a user by verifying a JWT supplied as the PAM password (authtok). The JWT
 signature is checked against the public key extracted from an issuer X.509
 certificate. Issuer and audience claims are optionally validated. The target
-user can be mapped from a configurable JWT claim (`map_field`) and/or a
-configurable claim can be required to equal the requesting user (`match_field`).
-Both username options are independent and default off.
+user can be mapped from a configurable JWT claim (`map_field`). Username
+BINDING is always enforced: the verifier requires a configurable claim
+(`match_field`, recommended) -- or the JWT standard `sub` claim as a fallback
+when `match_field` is unset -- to equal the requesting user. A token that
+omits the bound claim (or carries it as the empty string) is rejected with
+`PAM_USER_UNKNOWN`. Mapping (`map_field`) and binding (`match_field`) are
+independent options that both default off, except that the implicit
+sub-fallback binding is always on.
 
 See [`plans/plan.md`](plans/plan.md) for the full design.
 
@@ -116,18 +121,22 @@ with zero warnings.
 | `audience=<string>` | no | unset | Require `aud` claim to contain this |
 | `map_field=<claim>` | no | unset | Set PAM user from this JWT claim |
 | `fallback_user=<user>` | no | unset | PAM user when `map_field` claim is absent/empty |
-| `match_field=<claim>` | no | unset | Require this claim to equal requested user |
+| `match_field=<claim>` | no | unset | Require this claim to equal requested user; when unset, binding falls back to the JWT standard `sub` claim |
 | `clock_skew=<sec>` | no | `0` | Leeway for `exp` / `nbf` validation |
 | `debug` | no | off | Verbose `pam_syslog` logging (never logs tokens) |
 
 `map_field` (mapping) and `match_field` (binding) are independent and both
-default off. `fallback_user` is meaningful only when `map_field` is also
-set; configuring it without `map_field` is rejected at parse time as
-`PAM_JWT_CFG_E_INVALID_VALUE`. When the `map_field` claim is missing or
-empty in a verified token, the verifier substitutes `fallback_user` for
-the mapped PAM user. The substitution does NOT participate in the
-`match_field` check, which always compares the requested user against
-the configured claim value.
+default off. Username BINDING, however, is **always** enforced: when
+`match_field` is unset the verifier falls back to the JWT standard `sub`
+claim and requires it to equal the requesting user. A token that omits
+the bound claim (or carries it as the empty string) is rejected with
+`PAM_USER_UNKNOWN`. `fallback_user` is meaningful only when `map_field`
+is also set; configuring it without `map_field` is rejected at parse
+time as `PAM_JWT_CFG_E_INVALID_VALUE`. When the `map_field` claim is
+missing or empty in a verified token, the verifier substitutes
+`fallback_user` for the mapped PAM user. The substitution does NOT
+participate in the binding check, which always compares the requested
+user against the configured claim value (or the `sub` fallback).
 
 ## Testing strategy
 
@@ -149,8 +158,10 @@ Coverage required before merge:
    tampered signature, wrong key, `alg=none` rejected.
 3. **Claims:** `iss`/`aud` match/mismatch/missing; expired; not-yet-valid;
    `clock_skew` behavior.
-4. **Usernames:** mapping sets user; binding pass/fail; both off; both on
-   consistent/inconsistent.
+4. **Usernames:** mapping sets user; binding pass/fail (match_field and
+   the implicit `sub`-fallback binding); both off is rejected (binding
+   is always required); both on consistent/inconsistent; explicit
+   `sub`-fallback binding rejects missing/empty/mismatched `sub`.
 5. **Integration:** PAM harness via `pam_start` + `pam_authenticate` with a
    conversation callback across a scenario matrix.
 

@@ -312,7 +312,8 @@ TEST_GROUP(jwt_verify)
     TEST("verify: valid RS256 token verifies")
     {
         ensure_path();
-        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
         ASSERT_INT_EQ(verify(&cfg, tok, "anyone", NULL), PAM_SUCCESS);
@@ -323,7 +324,8 @@ TEST_GROUP(jwt_verify)
     TEST("verify: valid ES256 token verifies")
     {
         ensure_path();
-        char *tok = make_token("--alg", "ES256", "--key", EC_KEY, NULL);
+        char *tok = make_token("--alg", "ES256", "--key", EC_KEY,
+                               "--sub", "anyone", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(EC_CERT);
         ASSERT_INT_EQ(verify(&cfg, tok, "anyone", NULL), PAM_SUCCESS);

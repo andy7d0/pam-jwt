@@ -181,10 +181,18 @@ TEST_GROUP(claims)
 {
     /* --- iss --------------------------------------------------------------- */
 
+    /* Username binding is always enforced; when the operator does not
+     * pin a custom claim with match_field, the verifier falls back to
+     * the JWT standard `sub` claim. The tests below pin --sub to the
+     * same value as the requested user ("anyone") so the binding step
+     * passes and the test is free to focus on the iss/aud/exp branch
+     * it actually wants to exercise. The dedicated sub-binding matrix
+     * lives in tests/test_users.c. */
     TEST("iss: match -> success")
     {
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--iss", "https://issuer.example", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -199,6 +207,7 @@ TEST_GROUP(claims)
     {
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--iss", "https://issuer.example", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -213,7 +222,8 @@ TEST_GROUP(claims)
     {
         ensure_path();
         /* No --iss flag -> token has no iss claim. */
-        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
         cfg.issuer = pam_jwt_strdup("https://issuer.example");
@@ -226,7 +236,8 @@ TEST_GROUP(claims)
     TEST("iss: not configured and missing -> success")
     {
         ensure_path();
-        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
         ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "anyone", NULL),
@@ -242,6 +253,7 @@ TEST_GROUP(claims)
          * the claim must not cause a failure -- it's purely informational
          * to whoever inspects the token later. */
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--iss", "https://anywhere.example", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -257,6 +269,7 @@ TEST_GROUP(claims)
     {
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--aud", "my-service", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -271,6 +284,7 @@ TEST_GROUP(claims)
     {
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--aud", "my-service", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -284,7 +298,8 @@ TEST_GROUP(claims)
     TEST("aud: configured but missing in token -> AUTH_ERR")
     {
         ensure_path();
-        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
         cfg.audience = pam_jwt_strdup("my-service");
@@ -297,7 +312,8 @@ TEST_GROUP(claims)
     TEST("aud: not configured and missing -> success")
     {
         ensure_path();
-        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
         ASSERT_INT_EQ(pam_jwt_verify(NULL, &cfg, tok, "anyone", NULL),
@@ -319,6 +335,7 @@ TEST_GROUP(claims)
     {
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--aud-json",
                                "[\"my-service\",\"other-service\"]",
                                NULL);
@@ -336,6 +353,7 @@ TEST_GROUP(claims)
         ensure_path();
         /* The matcher must scan the whole array, not just [0]. */
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--aud-json",
                                "[\"first\",\"second\",\"third\"]",
                                NULL);
@@ -352,6 +370,7 @@ TEST_GROUP(claims)
     {
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--aud-json",
                                "[\"my-service\",\"other-service\"]",
                                NULL);
@@ -370,6 +389,7 @@ TEST_GROUP(claims)
         /* An empty aud list is well-formed JSON but no value can match
          * the configured audience. */
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--aud-json", "[]", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -383,7 +403,8 @@ TEST_GROUP(claims)
     TEST("aud array: configured but token has no aud -> AUTH_ERR")
     {
         ensure_path();
-        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
         cfg.audience = pam_jwt_strdup("my-service");
@@ -399,6 +420,7 @@ TEST_GROUP(claims)
         /* When the operator does not configure `audience`, the array
          * claim is purely informational and must not cause a failure. */
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--aud-json",
                                "[\"my-service\",\"other-service\"]",
                                NULL);
@@ -416,6 +438,7 @@ TEST_GROUP(claims)
         /* Sanity: --aud-json must not have broken the plain-string path
          * which is exercised by the rest of the aud tests above. */
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--aud", "my-service", NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -436,6 +459,7 @@ TEST_GROUP(claims)
         char exp[32];
         snprintf(exp, sizeof(exp), "%ld", 1000000000L);
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--exp", exp, NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -452,6 +476,7 @@ TEST_GROUP(claims)
         char nbf[32];
         snprintf(nbf, sizeof(nbf), "%ld", 10000000000L);
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--nbf", nbf, NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -469,6 +494,7 @@ TEST_GROUP(claims)
         char exp[32];
         snprintf(exp, sizeof(exp), "%ld", now - 5L);
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--exp", exp, NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -485,6 +511,7 @@ TEST_GROUP(claims)
         char exp[32];
         snprintf(exp, sizeof(exp), "%ld", 1000000000L);
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--exp", exp, NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -503,6 +530,7 @@ TEST_GROUP(claims)
         char nbf[32];
         snprintf(nbf, sizeof(nbf), "%ld", now + 5L);
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--nbf", nbf, NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -522,6 +550,7 @@ TEST_GROUP(claims)
         char exp[32];
         snprintf(exp, sizeof(exp), "%ld", now - 1L);
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--exp", exp, NULL);
         ASSERT_TRUE(tok != NULL);
         struct pam_jwt_cfg cfg = make_cfg(RSA_CERT);
@@ -535,6 +564,7 @@ TEST_GROUP(claims)
     {
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--iss", "https://issuer.example",
                                "--aud", "my-service", NULL);
         ASSERT_TRUE(tok != NULL);
@@ -552,6 +582,7 @@ TEST_GROUP(claims)
         ensure_path();
         /* aud present in token, but cfg expects a different value. */
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "anyone",
                                "--iss", "https://issuer.example",
                                "--aud", "my-service", NULL);
         ASSERT_TRUE(tok != NULL);

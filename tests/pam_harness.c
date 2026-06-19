@@ -366,10 +366,15 @@ static int run_simple(const char *service, const char *user, const char *jwt)
 
 TEST_GROUP(pam_harness)
 {
+    /* All test tokens carry --sub=alice (or --sub=anyone for tests
+     * that pass a different requested user) so the always-on binding
+     * check does not short-circuit the case the test is targeting.
+     * The dedicated sub-binding matrix lives in tests/test_users.c. */
     TEST("module loads and a valid RS256 token authenticates")
     {
         ensure_path();
-        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "alice", NULL);
         ASSERT_TRUE(tok != NULL);
         ASSERT_INT_EQ(write_service_file("pam_jwt_test_ok",
                                          "cert_file=" RSA_CERT),
@@ -382,7 +387,8 @@ TEST_GROUP(pam_harness)
     TEST("invalid signature is rejected with AUTH_ERR")
     {
         ensure_path();
-        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "alice", NULL);
         ASSERT_TRUE(tok != NULL);
         /* Flip a byte in the middle of the signature segment, well
          * clear of the trailing base64 padding bits. base64url
@@ -415,6 +421,7 @@ TEST_GROUP(pam_harness)
         char exp[32];
         snprintf(exp, sizeof(exp), "%ld", 1000000000L);
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "alice",
                                "--exp", exp, NULL);
         ASSERT_TRUE(tok != NULL);
         ASSERT_INT_EQ(write_service_file("pam_jwt_test_expired",
@@ -428,7 +435,8 @@ TEST_GROUP(pam_harness)
     TEST("missing cert_file produces SERVICE_ERR")
     {
         ensure_path();
-        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY, NULL);
+        char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "alice", NULL);
         ASSERT_TRUE(tok != NULL);
         /* Empty arg list: parser must reject with PAM_SERVICE_ERR at the
          * entry point, never with a spurious AUTH_ERR. */
@@ -442,6 +450,7 @@ TEST_GROUP(pam_harness)
     {
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "alice",
                                "--iss", "https://issuer.example", NULL);
         ASSERT_TRUE(tok != NULL);
         char cfg[256];
@@ -457,6 +466,7 @@ TEST_GROUP(pam_harness)
     {
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "alice",
                                "--claim", "username=alice", NULL);
         ASSERT_TRUE(tok != NULL);
         char cfg[256];
@@ -472,6 +482,7 @@ TEST_GROUP(pam_harness)
     {
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "alice",
                                "--claim", "preferred_username=alice", NULL);
         ASSERT_TRUE(tok != NULL);
         char cfg[256];
@@ -479,7 +490,7 @@ TEST_GROUP(pam_harness)
                  "cert_file=%s map_field=preferred_username", RSA_CERT);
         ASSERT_INT_EQ(write_service_file("pam_jwt_test_map", cfg), 0);
         char *user = NULL;
-        int rc = run_scenario("pam_jwt_test_map", "ignored", tok, &user);
+        int rc = run_scenario("pam_jwt_test_map", "alice", tok, &user);
         ASSERT_INT_EQ(rc, PAM_SUCCESS);
         ASSERT_TRUE(user != NULL);
         ASSERT_STR_EQ(user, "alice");
@@ -491,6 +502,7 @@ TEST_GROUP(pam_harness)
     {
         ensure_path();
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "alice@example.com",
                                "--claim", "username=alice@example.com",
                                "--claim", "preferred_username=alice", NULL);
         ASSERT_TRUE(tok != NULL);
@@ -517,6 +529,7 @@ TEST_GROUP(pam_harness)
         char exp[32];
         snprintf(exp, sizeof(exp), "%ld", now - 5L);
         char *tok = make_token("--alg", "RS256", "--key", RSA_KEY,
+                               "--sub", "alice",
                                "--exp", exp, NULL);
         ASSERT_TRUE(tok != NULL);
         char cfg[256];

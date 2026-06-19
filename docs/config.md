@@ -111,6 +111,24 @@ allowed. The recommended pattern is to set `match_field` to a stable
 account id (e.g. `sub` or `uid`) and `map_field` to a human-friendly
 name (e.g. `preferred_username`).
 
+### Implicit binding: `sub` fallback (always enforced)
+
+User matching is **always** required: there is no "verify the
+signature and call it a day" mode. When `match_field` is **not**
+configured, the verifier falls back to the JWT standard `sub` claim
+(per RFC 7519, the subject of the token -- the entity the IdP is
+identifying) and requires it to equal the user that initiated
+authentication. A token that omits `sub`, or carries it as the empty
+string, is rejected with `PAM_USER_UNKNOWN` -- the empty-string path
+prevents a buggy IdP that wipes the claim from accidentally matching
+every requested user.
+
+Operators who want to bind to a custom claim (e.g. `uid`,
+`preferred_username`, `email`) should set `match_field` to that claim
+name. Operators who want the canonical RFC 7519 behaviour can simply
+leave `match_field` unset and ensure their IdP always issues a
+non-empty `sub`.
+
 ### `clock_skew` (optional)
 
 Non-negative integer giving the leeway in seconds applied to the
@@ -161,7 +179,7 @@ propagates them unchanged, except where noted.
 |---|---|---|
 | `PAM_SUCCESS` | `pam_sm_authenticate` | The JWT verified, all configured claim / user checks passed. The optional mapped user (the `map_field` claim value, or `fallback_user` if the claim was missing/empty) has been stashed for `pam_sm_setcred` to promote to `PAM_USER`. |
 | `PAM_AUTH_ERR` | `pam_sm_authenticate`, `pam_jwt_verify` | The authtok could not be retrieved from the PAM conversation, the token is empty, the token is malformed, the signature is invalid, the JWT `alg` is outside `{RS256, ES256}` or does not match the certificate key type, the time-based claims (`exp` / `nbf`) fall outside the `clock_skew` window, the `iss` claim does not match the configured `issuer`, the `aud` claim does not contain the configured `audience`, or the `map_field` claim is missing, non-string, or empty in the token AND no `fallback_user` was configured. |
-| `PAM_USER_UNKNOWN` | `pam_sm_authenticate`, `pam_jwt_verify` | `pam_get_user()` returned no user (or an empty string), **or** the `match_field` claim does not equal the user that initiated authentication. |
+| `PAM_USER_UNKNOWN` | `pam_sm_authenticate`, `pam_jwt_verify` | `pam_get_user()` returned no user (or an empty string), **or** the bound claim (the claim named by `match_field`, or the JWT standard `sub` claim when `match_field` is unset) is missing, empty, or does not equal the user that initiated authentication. |
 | `PAM_SERVICE_ERR` | `pam_sm_authenticate`, `pam_jwt_verify` | Module arguments could not be parsed (`cert_file` missing, malformed value, duplicate, OOM during parse, ...), the cert file is missing or unreadable, the cert file is not a valid X.509 PEM, or another internal error occurred (e.g. an unexpected `NULL` argument reaching the verifier). |
 | `PAM_BUF_ERR` | `pam_sm_authenticate`, `pam_jwt_verify` | Memory allocation failure (e.g. cloning the mapped-user claim, or stashing it via `pam_set_data()`). |
 
