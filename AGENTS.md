@@ -75,9 +75,40 @@ make test-asan  # rebuild everything with AddressSanitizer + UBSan,
                 # run the suite, and run LeakSanitizer at exit.
                 # Use this to catch leaks/UAF/undefined behavior in
                 # src/config.c and any other parser modules.
-make clean      # remove build artifacts
+make release    # build an optimized, hardened, stripped pam_jwt.so
+                # into build/release/pam_jwt.so. Does NOT rebuild the
+                # default debug tree at build/, so both coexist.
+make release-info  # print pam-jwt version + release .so path
+make install-release # install the stripped release .so
+                     # (honors DESTDIR / PREFIX)
+make clean      # remove build artifacts (incl. build/release/)
 make install    # install .so + example config (honors DESTDIR / PREFIX)
 ```
+
+### `make release` details
+
+The release target is intended for packaging and production deployment,
+not day-to-day development. It produces a `.so` that is:
+
+- compiled with `-O3 -flto -DNDEBUG`
+- protected by a version script ([`pam_jwt.map`](pam_jwt.map)) that
+  exports **only** the six `pam_sm_*` entry points Linux-PAM looks up;
+  every other internal symbol is hidden
+- linked with full RELRO (`-Wl,-z,relro`), immediate binding
+  (`-Wl,-z,now`), GNU hash, and a SHA-1 build-id
+- stripped of `.debug_*` sections via `strip --strip-debug` (the
+  `.symtab`/`.strtab` and `.dynsym`/`.dynstr` tables are kept so the
+  `.so` still reports a sane symbol list to `nm -D` and crash-trace
+  tooling)
+- reproducible across machines: `-ffile-prefix-map` and
+  `-fmacro-prefix-map` rewrite absolute source paths to `.`
+
+The version string baked into the .so (`PAM_JWT_VERSION`) comes from
+`git describe --tags --always --dirty`, falling back to `dev` for
+tarball builds.
+
+The release tree at `build/release/` is independent of the debug tree
+at `build/`. A normal `make` + `make test` cycle does not touch it.
 
 Compile flags: `-Wall -Wextra -Werror -fPIC -fvisibility=hidden`.
 Link: `-shared -lpam -ljwt -lssl -lcrypto` (via `pkg-config`).

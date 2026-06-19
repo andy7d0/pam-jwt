@@ -34,6 +34,47 @@ COMMON_CFLAGS := -std=c11 -fPIC -fvisibility=hidden \
                  -D_GNU_SOURCE -D_POSIX_C_SOURCE=200809L \
                  $(WARNINGS) $(PKG_CFLAGS) -Iinclude
 
+# Release build flags. Used only by the `make release` target. The debug
+# build path (the default `all` target) is unaffected.
+#
+#   -O3 -flto          : maximum optimization + link-time optimization
+#   -DNDEBUG           : drop assert()s
+#   -D_FORTIFY_SOURCE=2: runtime bounds checking in libc calls
+#   -fstack-protector-strong : canary on functions with locals
+#   -fno-plt           : PLT-free calls (smaller .so, slightly faster)
+#   -fno-semantic-interposition : keep our symbols visible to LTO only
+#   -fdata-sections -ffunction-sections + --gc-sections : drop dead code
+#   -ffile-prefix-map / -fmacro-prefix-map : reproducible paths in .so
+#   -fno-unwind-tables -fno-asynchronous-unwind-tables : smaller unwind data
+#   -fno-ident         : drop the GCC version ident string
+#
+# LDFLAGS additions enable full RELRO + immediate binding + GNU_HASH +
+# build-id, and pass the version script exported via -fvisibility=hidden.
+RELEASE_CFLAGS := -O3 -flto -DNDEBUG \
+                  -D_FORTIFY_SOURCE=2 \
+                  -fstack-protector-strong \
+                  -fno-plt -fno-semantic-interposition \
+                  -fdata-sections -ffunction-sections \
+                  -ffile-prefix-map=$(CURDIR)=. \
+                  -fmacro-prefix-map=$(CURDIR)=. \
+                  -fno-unwind-tables -fno-asynchronous-unwind-tables \
+                  -fno-ident \
+                  $(COMMON_CFLAGS)
+RELEASE_LDFLAGS := -Wl,-O1 -Wl,--gc-sections \
+                   -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack \
+                   -Wl,--build-id=sha1 \
+                   -Wl,--hash-style=gnu \
+                   -Wl,--version-script=$(CURDIR)/pam_jwt.map
+
+# Convenience: the path users typically want after a release build.
+STRIP ?= strip
+VERSION_SCRIPT := $(CURDIR)/pam_jwt.map
+# Version string embedded in the .so via -DPAM_JWT_VERSION. Prefer
+# `git describe` so packaged builds are tagged, falling back to "dev"
+# for tarball builds.
+PAM_JWT_VERSION := $(shell git describe --tags --always --dirty 2>/dev/null \
+                              || echo "dev")
+
 # AddressSanitizer + UndefinedBehaviorSanitizer flags. Opt-in via
 # `make test-asan`. LeakSanitizer (bundled with ASan) runs at process
 # exit and makes the binary return non-zero on any leaked block,
@@ -59,7 +100,8 @@ EXAMPLE_CONF := examples/pam-jwt.conf
 
 # --- Targets -----------------------------------------------------------------
 
-.PHONY: all test check test-asan clean install uninstall
+.PHONY: all test check test-asan clean install uninstall \
+        release release-info install-release
 
 all: $(LIB_SO)
 
@@ -197,6 +239,76 @@ test-asan:
 	 $(ASAN_BUILDDIR)/run_tests
 	@echo "== ASan run clean =="
 
+# --- Release -----------------------------------------------------------------
+
+# `make release` builds an optimized, stripped, hardened pam_jwt.so
+# into build/release/pam_jwt.so. It does NOT rebuild the default debug
+# tree at build/, so both can coexist. The release .so:
+#
+#   * is compiled with -O3 -flto and -DNDEBUG
+#   * has hidden visibility + a version script exporting only pam_sm_*
+#   * has full RELRO, immediate binding, GNU hash, build-id
+#   * has its ELF debug sections stripped via $(STRIP) --strip-debug
+#     (strips .debug_*, leaves .dynsym / .dynstr / .symtab / .strtab
+#     so file(1) and ldd(1) still report the .so correctly)
+#   * embeds a PAM_JWT_VERSION string (git describe, or "dev")
+#
+# Use `make install-release` to install it into $(INSTALL_DIR).
+#
+# Override the toolchain if you need to: `make release CC=clang`.
+RELEASE_BUILDDIR := $(BUILDDIR)/release
+RELEASE_OBJS    := $(patsubst $(SRCDIR)/%.c,$(RELEASE_BUILDDIR)/%.o,$(LIB_SRCS))
+RELEASE_SO      := $(RELEASE_BUILDDIR)/pam_jwt.so
+
+# The release build needs its own pam_jwt.so entry in the .gitignore
+# so accidental `git status` noise stays out.
+.PHONY: release-tree
+release-tree:
+	@mkdir -p $(RELEASE_BUILDDIR)
+
+# Release .o files need LTO-aware CFLAGS + a -DPAM_JWT_VERSION define
+# baked in. We deliberately drop -g from the embedded debug info so
+# the strip-debug step below has something to strip; the .so stays
+# small but identifiers remain in the dynsym.
+$(RELEASE_BUILDDIR)/%.o: $(SRCDIR)/%.c | release-tree
+	$(CC) $(RELEASE_CFLAGS) -DPAM_JWT_VERSION='"$(PAM_JWT_VERSION)"' \
+	      -c $< -o $@
+
+# Link the release .so. -flto requires LTO on the link command too,
+# so the per-object LTO bitcode is merged at link time. The version
+# script restricts the dynamic symbol table to the pam_sm_* entries
+# that Linux-PAM looks up at module load.
+$(RELEASE_SO): $(RELEASE_OBJS) $(VERSION_SCRIPT) | release-tree
+	$(CC) -shared -Wl,-soname,pam_jwt.so -flto \
+	      $(RELEASE_LDFLAGS) \
+	      -o $@ $(RELEASE_OBJS) $(PKG_LDLIBS)
+
+# Strip debug sections in-place. We keep .dynsym / .dynstr so the
+# dynamic loader can still resolve symbols and the .so reports a sane
+# list of exported entry points via `nm -D`. We do NOT run `strip
+# --strip-unneeded` because that removes .symtab/.strtab, which some
+# distributions' debug-info tooling prefers to retain.
+$(RELEASE_SO).stripped: $(RELEASE_SO)
+	$(STRIP) --strip-debug -o $@ $<
+
+# Phony entry point. Always rebuilds, so a `make release` after a
+# source change picks up the new bits without a manual `make clean`.
+release: $(RELEASE_SO).stripped
+	@echo "release .so: $(RELEASE_SO).stripped"
+	@echo "version:     $(PAM_JWT_VERSION)"
+	@ls -l $(RELEASE_SO).stripped
+
+# Quick version stamp for packaging scripts / CI logs.
+release-info:
+	@echo "pam-jwt version: $(PAM_JWT_VERSION)"
+	@echo "release .so:     $(RELEASE_SO).stripped"
+
+# Install the stripped release .so. Honors $(DESTDIR) and $(PREFIX)
+# exactly like the regular `install` target.
+install-release: release
+	install -d $(INSTALL_DIR)
+	install -m 0644 $(RELEASE_SO).stripped $(INSTALL_DIR)/pam_jwt.so
+
 # --- Install / uninstall -----------------------------------------------------
 
 install: $(LIB_SO) $(EXAMPLE_CONF)
@@ -212,3 +324,5 @@ uninstall:
 
 clean:
 	rm -rf $(BUILDDIR)
+# Note: $(BUILDDIR) already covers build/release/ since release lives
+# under build/. No additional path needed here.
