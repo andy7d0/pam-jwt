@@ -428,6 +428,15 @@ int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
         *out_mapped_user = NULL;
     }
 
+    /* Default the result to success; every failure path below jumps to
+     * `cleanup` after setting `ret` to the appropriate PAM_* code. The
+     * teardown is shared so we never duplicate `jwt_free`/`memset`/`free`
+     * across the half-dozen failure branches. */
+    int ret = PAM_SUCCESS;
+    char *pubkey_pem = NULL;
+    size_t pubkey_len = 0;
+    jwt_t *jwt = NULL;
+
     if (cfg == NULL || token == NULL || requested_user == NULL)
     {
         return PAM_SERVICE_ERR;
@@ -449,15 +458,14 @@ int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
     /* Load the issuer certificate. We intentionally pull this on every
      * call (rather than caching at config time) so a cert rotation is
      * picked up without restarting the PAM stack. The cert is small. */
-    char *pubkey_pem = NULL;
-    size_t pubkey_len = 0;
     enum pam_jwt_key_type key_type = PAM_JWT_KEY_NONE;
     if (!pam_jwt_load_cert(cfg->cert_file, &pubkey_pem, &pubkey_len,
                            &key_type))
     {
         pam_jwt_log(pamh, cfg->debug, LOG_ERR,
                     "pam_jwt: failed to load issuer certificate");
-        return PAM_SERVICE_ERR;
+        ret = PAM_SERVICE_ERR;
+        goto cleanup;
     }
 
     /* Defence-in-depth: warn (debug) if the cert file is world-writable.
@@ -475,39 +483,32 @@ int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
      * check anyway, since we provide a non-NULL key, but we re-check
      * the alg explicitly below to be safe and to be able to emit a
      * precise diagnostic). */
-    jwt_t *jwt = NULL;
     int rc = jwt_decode(&jwt, token,
                         (const unsigned char *)pubkey_pem,
                         (int)pubkey_len);
     if (rc != 0 || jwt == NULL)
     {
         /* jwt_decode() failed: malformed token, bad signature, or
-         * alg/key mismatch. Wipe the (now unused) PEM buffer before
-         * returning; the key is public but the buffer was heap-allocated
-         * and reentrancy safety is cheap. */
-        if (pubkey_pem != NULL)
-        {
-            memset(pubkey_pem, 0, pubkey_len);
-            free(pubkey_pem);
-        }
+         * alg/key mismatch. */
         pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
                     "pam_jwt: jwt_decode failed (bad signature or format)");
-        return PAM_AUTH_ERR;
+        ret = PAM_AUTH_ERR;
+        goto cleanup;
     }
 
     jwt_alg_t alg = jwt_get_alg(jwt);
-    bool alg_ok = alg_is_allowed(alg) && alg_matches_key(alg, key_type);
-    if (!alg_ok)
+    if (!alg_is_allowed(alg) || !alg_matches_key(alg, key_type))
     {
+        /* jwt_alg_str() returns a static, non-secret string from libjwt
+         * (e.g. "RS256", "HS256"); safe to log. We only reach this branch
+         * on a disallowed alg, so the diagnostic is the only useful signal
+         * an operator gets about what the token actually claimed. */
         const char *alg_name = jwt_alg_str(alg);
         pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
-                    "pam_jwt: rejecting token with disallowed alg");
-        jwt_free(jwt);
-        memset(pubkey_pem, 0, pubkey_len);
-        free(pubkey_pem);
-        /* alg_name is a static string from libjwt; logging it is safe. */
-        (void)alg_name;
-        return PAM_AUTH_ERR;
+                    "pam_jwt: rejecting token with disallowed alg=%s",
+                    alg_name != NULL ? alg_name : "?");
+        ret = PAM_AUTH_ERR;
+        goto cleanup;
     }
 
     /* Validate exp / nbf with clock_skew. */
@@ -515,10 +516,8 @@ int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
     {
         pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
                     "pam_jwt: token expired or not yet valid");
-        jwt_free(jwt);
-        memset(pubkey_pem, 0, pubkey_len);
-        free(pubkey_pem);
-        return PAM_AUTH_ERR;
+        ret = PAM_AUTH_ERR;
+        goto cleanup;
     }
 
     /* Optional issuer match. */
@@ -529,26 +528,21 @@ int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
         {
             pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
                         "pam_jwt: iss claim does not match");
-            jwt_free(jwt);
-            memset(pubkey_pem, 0, pubkey_len);
-            free(pubkey_pem);
-            return PAM_AUTH_ERR;
+            ret = PAM_AUTH_ERR;
+            goto cleanup;
         }
     }
 
     /* Optional audience match. libjwt only checks `aud` against a single
-     * string when you ask it to, so we do it by hand and treat the claim
-     * as a single string (which is what RFC 7519 allows for the common
-     * case). If the token's `aud` is an array, jwt_get_grant returns NULL
-     * and the claim mismatches. */
+     * string when you ask it to, so we do it by hand. The token's `aud`
+     * may be a JSON string or an array of strings; audience_matches()
+     * handles both. */
     if (cfg->audience != NULL && !audience_matches(jwt, cfg->audience))
     {
         pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
                     "pam_jwt: aud claim does not match");
-        jwt_free(jwt);
-        memset(pubkey_pem, 0, pubkey_len);
-        free(pubkey_pem);
-        return PAM_AUTH_ERR;
+        ret = PAM_AUTH_ERR;
+        goto cleanup;
     }
 
     /* Optional username binding: required claim must equal requested_user.
@@ -561,10 +555,8 @@ int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
         {
             pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
                         "pam_jwt: match_field claim does not equal user");
-            jwt_free(jwt);
-            memset(pubkey_pem, 0, pubkey_len);
-            free(pubkey_pem);
-            return PAM_USER_UNKNOWN;
+            ret = PAM_USER_UNKNOWN;
+            goto cleanup;
         }
     }
 
@@ -583,35 +575,40 @@ int pam_jwt_verify(pam_handle_t *pamh, const struct pam_jwt_cfg *cfg,
         {
             pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
                         "pam_jwt: map_field claim missing in token");
-            jwt_free(jwt);
-            memset(pubkey_pem, 0, pubkey_len);
-            free(pubkey_pem);
-            return PAM_AUTH_ERR;
+            ret = PAM_AUTH_ERR;
+            goto cleanup;
         }
         if (claim[0] == '\0')
         {
             pam_jwt_log(pamh, cfg->debug, LOG_DEBUG,
                         "pam_jwt: map_field claim is empty in token");
-            jwt_free(jwt);
-            memset(pubkey_pem, 0, pubkey_len);
-            free(pubkey_pem);
-            return PAM_AUTH_ERR;
+            ret = PAM_AUTH_ERR;
+            goto cleanup;
         }
         char *copy = pam_jwt_strdup(claim);
         if (copy == NULL)
         {
-            jwt_free(jwt);
-            memset(pubkey_pem, 0, pubkey_len);
-            free(pubkey_pem);
-            return PAM_BUF_ERR;
+            ret = PAM_BUF_ERR;
+            goto cleanup;
         }
         *out_mapped_user = copy;
     }
 
-    /* Done. Free everything. The mapped user (if any) was already handed
-     * off; everything else is local. */
-    jwt_free(jwt);
-    memset(pubkey_pem, 0, pubkey_len);
-    free(pubkey_pem);
-    return PAM_SUCCESS;
+cleanup:
+    /* Single teardown point: release the parsed token (if any) and wipe
+     * then free the heap-allocated PEM buffer. Both are NULL-safe. The
+     * mapped user (if any) was handed off to the caller via
+     * *out_mapped_user and is NOT freed here. */
+    if (jwt != NULL)
+    {
+        jwt_free(jwt);
+    }
+    if (pubkey_pem != NULL)
+    {
+        /* The key is public, but the buffer was heap-allocated; wiping
+         * before free keeps reentrancy-safe hygiene cheap. */
+        memset(pubkey_pem, 0, pubkey_len);
+        free(pubkey_pem);
+    }
+    return ret;
 }

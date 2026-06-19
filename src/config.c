@@ -226,7 +226,16 @@ enum pam_jwt_cfg_status pam_jwt_cfg_parse(int argc, const char **argv,
      * via free() after the cfg has been cleared, so this prologue is
      * safe on a fresh stack-resident cfg whose string fields contain
      * uninitialized garbage. After the snapshot the parser is in the
-     * same state as if the caller had zeroed the cfg. */
+     * same state as if the caller had zeroed the cfg.
+     *
+     * The prior_strings[] array is sized to match the number of
+     * heap-owned `char *` fields in `struct pam_jwt_cfg` (see
+     * include/pam_jwt.h): cert_file, issuer, audience, map_field,
+     * match_field. If a new string field is added to the cfg, bump
+     * this constant AND add matching entries below, otherwise the new
+     * field will leak every time the cfg is re-parsed. clock_skew and
+     * debug are scalar/POD and are reset directly without going
+     * through the snapshot. */
     char *prior_strings[5];
     prior_strings[0] = cfg->cert_file;
     prior_strings[1] = cfg->issuer;

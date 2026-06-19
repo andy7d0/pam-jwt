@@ -255,17 +255,35 @@ the [`Makefile`](../Makefile), and the docs. Ordered by priority.
 
 ### Low — style/consistency
 
-- [ ] **Dead variable `alg_name`.** [`src/jwt_verify.c`](../src/jwt_verify.c)
+- [x] **Dead variable `alg_name`.** [`src/jwt_verify.c`](../src/jwt_verify.c)
       computes `jwt_alg_str(alg)` then discards it with `(void)alg_name;`.
       Either log the alg name in the debug message (it's a public, non-secret
       header value) or delete the dead code.
-- [ ] **Duplicated teardown in [`src/jwt_verify.c`](../src/jwt_verify.c).**
+      Resolved: the alg name is now interpolated into the
+      "rejecting token with disallowed alg=%s" debug message; the
+      `(void)alg_name;` is gone.
+- [x] **Duplicated teardown in [`src/jwt_verify.c`](../src/jwt_verify.c).**
       `jwt_free` / `memset` / `free(pubkey_pem)` is repeated ~6×. Collapse
       to a single `goto cleanup` pattern.
-- [ ] **`prior_strings[5]` in [`src/config.c`](../src/config.c) hard-codes
+      Resolved: every failure path now sets `ret` and `goto cleanup`;
+      a single `cleanup:` label releases `jwt` and wipes+frees the
+      heap-allocated PEM buffer. Both pointers are NULL-checked so
+      the early-return paths (which never allocated either) still
+      compose cleanly.
+- [x] **`prior_strings[5]` in [`src/config.c`](../src/config.c) hard-codes
       the count.** Add a comment pinning it to the struct definition so a
       new string field doesn't silently leak.
-- [ ] **[`README.md`](../README.md) status line is stale.** Still says
+      Resolved: a comment above the `char *prior_strings[5];`
+      declaration enumerates the five heap-owned `char *` fields in
+      `struct pam_jwt_cfg` (see `include/pam_jwt.h`), explains the
+      leak hazard if a new field is added, and notes that
+      `clock_skew`/`debug` are scalar/POD and bypass the snapshot.
+- [x] **[`README.md`](../README.md) status line is stale.** Still says
       "Pre-release, scaffolding stage. No code has been written yet."
       Update before tagging `v0.1.0`. Also the repo layout omits
       `tests/test_util.c`, `tests/test.c`, `tests/test.h`.
+      Resolved: the Status block now reads "Ready for `v0.1.0`"
+      with the current green-suite totals; the Repository layout
+      block now mirrors [`AGENTS.md`](../AGENTS.md) (per-file
+      comments on `src/` and `tests/`), and lists `test_util.c`,
+      `test.c`, and `test.h` under `tests/`.

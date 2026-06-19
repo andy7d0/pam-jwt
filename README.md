@@ -10,8 +10,10 @@ options are independent and default off.
 
 ## Status
 
-🚧 **Pre-release, scaffolding stage.** No code has been written yet. See
-[`plans/plan.md`](plans/plan.md) for the full design and progress.
+✅ **Ready for `v0.1.0`.** All planned modules and tests are implemented; the
+suite is green under `make clean && make && make test` (128 cases /
+885 assertions, zero warnings). See [`plans/plan.md`](plans/plan.md) for the
+full design and progress.
 
 ## Supported algorithms
 
@@ -95,22 +97,26 @@ pam-jwt/
 ├── AGENTS.md
 ├── Makefile
 ├── .gitignore
-├── include/pam_jwt.h
+├── include/
+│   └── pam_jwt.h
 ├── src/
-│   ├── pam_jwt.c
-│   ├── config.c
-│   ├── jwt_verify.c
-│   └── util.c
+│   ├── pam_jwt.c        # pam_sm_authenticate + stubs
+│   ├── config.c         # parse argc/argv -> struct pam_jwt_cfg
+│   ├── jwt_verify.c     # cert load, sig verify, claim + user checks
+│   └── util.c           # logging + helpers
 ├── tests/
-│   ├── run_tests.c
+│   ├── run_tests.c      # tiny custom test runner main
 │   ├── test_config.c
 │   ├── test_jwt_verify.c
 │   ├── test_claims.c
 │   ├── test_users.c
-│   ├── pam_harness.c
+│   ├── test_util.c      # logging gate, strdup, world-writable, read_file
+│   ├── pam_harness.c    # integration: pam_start / pam_authenticate
+│   ├── test.c           # test runner implementation (asserts/tally)
+│   ├── test.h           # shared TEST/TEST_GROUP/ASSERT_* macros
 │   └── fixtures/
-│       ├── gen_certs.sh
-│       └── make_jwt.c
+│       ├── gen_certs.sh # openssl: RSA + EC key/cert
+│       └── make_jwt.c   # C helper minting test JWTs via libjwt
 ├── examples/
 │   └── pam-jwt.conf
 ├── docs/
