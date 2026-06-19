@@ -20,7 +20,7 @@ Both username options are independent and default off.
 | Username mapping | Independent option, default off |
 | Username binding | Independent option, default off |
 | Build | GNU `make` Makefile; `pkg-config` for libjwt / openssl / pam |
-| VCS | git, conventional commits, `v0.1.0` tag |
+| VCS | git, conventional commits, `v0.2.0` tag |
 | Docs | `README.md`, `AGENTS.md`, `examples/pam-jwt.conf`, `docs/config.md` |
 
 ## Module configuration (PAM args, `argc`/`argv`)
@@ -138,7 +138,7 @@ Compile flags: `-Wall -Wextra -Werror -fPIC -fvisibility=hidden`; link
 - `git init`, initial commit with scaffolding.
 - Conventional commits (`feat:`, `test:`, `docs:`, `fix:`).
 - `main` branch; feature branches per todo group.
-- Tag `v0.1.0` once build + tests are green.
+- Tag `v0.2.0` once build + tests are green.
 
 ## Todos
 
@@ -159,7 +159,7 @@ Implementation checklist (update status as work lands):
 - [x] Integration harness: `pam_harness.c` (`pam_start_confdir` + `pam_authenticate`)
 - [x] Fixtures: `tests/fixtures/gen_certs.sh` + `tests/fixtures/make_jwt.c`
 - [x] Docs: `examples/pam-jwt.conf` + `docs/config.md`
-- [x] `make clean && make && make test` green: 128/128 cases, 885/885 assertions, no warnings
+- [x] `make clean && make && make test` green: 156/156 cases, 970/970 assertions, no warnings
 
 ## v0.1.0 readiness — known follow-ups (do not block the v0.1.0 tag)
 
@@ -179,6 +179,63 @@ Implementation checklist (update status as work lands):
   "`make clean && make && make test` passes with no warnings", which
   is satisfied.
 - **v0.1.0 tag.** Ready to push once the tag commit is drafted.
+
+## v0.2.0 readiness — bundled in this release
+
+The `feat/release-target` branch accumulates the engineering work that
+turns the v0.1.0 sources into a packagable, hardened shared object.
+Bumping to `v0.2.0` ships all of the following on top of v0.1.0:
+
+- **`make release` + `make install-release`.** New Makefile targets
+  produce a hardened, stripped `pam_jwt.so` at
+  `build/release/pam_jwt.so` (independent of the debug tree at
+  `build/`). The release build is `-O3 -flto -DNDEBUG`, links with
+  full RELRO + immediate binding + GNU hash + build-id, and is
+  restricted by a version script
+  ([`pam_jwt.map`](../pam_jwt.map)) that exports only the six
+  `pam_sm_*` entry points Linux-PAM looks up. `PAM_JWT_VERSION` is
+  baked in from `git describe --tags --always --dirty`, falling back
+  to `dev` for tarball builds.
+- **`make test-asan`.** Reconfigures the build tree with
+  AddressSanitizer + UBSan, re-runs the suite, and runs LeakSanitizer
+  at exit. The `pam_harness` group was wired through a compile-time
+  `-D` so it locates the ASan-instrumented `.so` at
+  `build/asan/pam_jwt.so`. Coverage now spans
+  `test_config.c` + `test_util.c` + `test_jwt_verify.c` +
+  `test_claims.c` + `test_users.c` + `pam_harness.c` under ASan.
+- **Vendored libjwt 1.17.2.** `vendor/libjwt/` is built as a static
+  archive and `--whole-archive`-linked into both the debug and release
+  `.so` files. The system `libjwt-dev` is no longer a build-time
+  dependency, so the build is self-contained across distros whose
+  `libjwt` packages are not API-compatible (Debian 13 ships 1.x,
+  Alpine 3.24 ships 3.x). See
+  [`vendor/libjwt/README.md`](../vendor/libjwt/README.md).
+- **Alpine packaging.** [`scripts/build-alpine-pkg.sh`](../scripts/build-alpine-pkg.sh)
+  builds the release `.so` inside a container and assembles an
+  unsigned `.apk`, deriving the package version from the same
+  `git describe` value that gets baked into the `.so`. Honors
+  `DESTDIR` / `PREFIX` like the in-tree install.
+- **Mandatory username binding with `sub` fallback.**
+  Username binding is now always enforced: when `match_field` is
+  unset the verifier falls back to the JWT standard `sub` claim and
+  requires it to equal the requesting user. A token that omits the
+  bound claim (or carries it as the empty string) is rejected with
+  `PAM_USER_UNKNOWN`. Mapping (`map_field`) and binding
+  (`match_field`) remain independent options that both default off.
+- **`fallback_user` option.** Substitutes for the mapped
+  `map_field` claim when that claim is missing or empty in a verified
+  token; meaningful only when `map_field` is also set, otherwise
+  rejected at parse time as `PAM_JWT_CFG_E_INVALID_VALUE`. The
+  substitution does NOT participate in the binding check.
+- **Test-suite growth.** The suite now runs **156 cases / 970
+  assertions** under `make clean && make && make test`, with no
+  warnings and no leaks under `make test-asan`. New coverage spans
+  `pam_jwt_strdup`, `pam_jwt_is_world_writable`,
+  `pam_jwt_read_file`, `aud` array semantics, and the new
+  `sub`-fallback / `fallback_user` paths.
+- **Agent-checklist gate.** `make clean && make && make test` is
+  required to pass with zero warnings before tagging, per
+  [`AGENTS.md`](../AGENTS.md).
 
 ## Post-review follow-ups (from non-test code review)
 

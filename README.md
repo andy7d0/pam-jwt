@@ -12,9 +12,9 @@ token, but never participates in the `match_field` binding check.
 
 ## Status
 
-✅ **Ready for `v0.1.0`.** All planned modules and tests are implemented; the
-suite is green under `make clean && make && make test` (128 cases /
-885 assertions, zero warnings). See [`plans/plan.md`](plans/plan.md) for the
+✅ **Ready for `v0.2.0`.** All planned modules and tests are implemented; the
+suite is green under `make clean && make && make test` (156 cases /
+970 assertions, zero warnings). See [`plans/plan.md`](plans/plan.md) for the
 full design and progress.
 
 ## Supported algorithms

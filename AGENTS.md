@@ -230,7 +230,7 @@ Coverage required before merge:
 
 - Conventional commits: `feat:`, `test:`, `docs:`, `fix:`.
 - `main` branch; feature branches per work area.
-- Tag `v0.1.0` once build + tests are green.
+- Tag `v0.2.0` once build + tests are green.
 
 ## Agent checklist before finishing
 
