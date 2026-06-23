@@ -139,7 +139,7 @@ Compile flags: `-Wall -Wextra -Werror -fPIC -fvisibility=hidden`; link
 - Conventional commits (`feat:`, `test:`, `docs:`, `fix:`).
 - `main` branch; feature branches per todo group.
 - Tag `v0.2.0` once build + tests are green.
-
+`
 ## Todos
 
 Implementation checklist (update status as work lands):
